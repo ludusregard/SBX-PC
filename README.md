@@ -1,6 +1,6 @@
-# SBX PC
+# Shutokō Battle X PC
 
-A PC port of *Shutoko Battle X* (Xbox 360, 2006) for Windows and
+A PC port of *Shutokō Battle X* (Xbox 360, 2006) for Windows and
 Linux. It has ReXGlue roots [ReXGlue](https://github.com/rexglue/rexglue-sdk),
 but the game is being rewritten subsystem by substem for modding and extendabillity.
 [ITC-Recomp](https://github.com/Spooky098529/ITC-Recomp), the recompilation
@@ -24,7 +24,7 @@ Much of the research into the game was being done by myself and the community pr
 - **Patch Loader**: game archive files are replaced by loose files in
   `assets/PATCH_DATA/` (on by default; `--patch_loader=false` turns it off).
 - **Custom Music Support**: add your own music to the game mix
-- **Shutoko Battle X Restored** archive files, loaded through the patch
+- **Shutokō Battle X Restored** archive files, loaded through the patch
   loader from a submodule in `assets/PATCH_DATA/BUILD/TXR/BUILD/`.
 - **Cut Cars**: the ECLI, S30, L86 and T86 are offered from the start of a
   new game (`--unlock_cut_cars=false` turns it off), and come on their own
@@ -94,7 +94,7 @@ Both builds share `sbx_pc/generated/` and need the game's
 
 ## Credits and links
 
-- [Shutoko Battle X Restored](https://github.com/ludusregard/Shutoko-Battle-X-Restored):
+- [Shutokō Battle X Restored](https://github.com/ludusregard/Shutokō-Battle-X-Restored):
   the English relocalization of the game.
 - [GUT Archive Tools](https://github.com/igorciz777/GUTArchiveTools) by
   igorciz777: the extractor for Genki's GUT archives (`BUILD.DAT` and
@@ -103,7 +103,7 @@ Both builds share `sbx_pc/generated/` and need the game's
   by JakeMR2: Cheat Engine tables, ImHex patterns and notes on the earlier
   Tokyo Xtreme Racer and Kaido Battle games, which helped work out the car
   specs.
-- [Shutokou Battle Discord](https://discord.gg/n4FvF3VkHQ): the series'
+- [Shutokōu Battle Discord](https://discord.gg/n4FvF3VkHQ): the series'
   community, for support and feedback.
 
 ## Documentation (This is written by LLMs primarily for LLMs)
