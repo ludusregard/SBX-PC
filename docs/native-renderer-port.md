@@ -85,7 +85,7 @@ into a new folder `frame_dumps/frame_NNN` next to `sbx.exe` (or in
   destinations, as with `--native_renderer_dump`, which also writes
   `frame.json` now (it replaced `draws.txt`).
 
-`sbx_recomp/tools/frame_dump/describe.py <folder>` lists the draws with the
+`sbx_pc/tools/frame_dump/describe.py <folder>` lists the draws with the
 game's names for them: the hand-written shader and its defines
 (`glsl/*/variants.txt`), each constant's name (`matWVPVS`, `DLightColor`,
 ...; from `glsl/game/shaders.json`), each texture's sampler name (`tx0`,

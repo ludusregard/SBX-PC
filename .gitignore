@@ -6,14 +6,14 @@
 !/assets/ADDON_DATA/
 
 # Build output
-/sbx_recomp/out/
-/sbx_recomp/release/
-/sbx_recomp/release_test/
+/sbx_pc/out/
+/sbx_pc/release/
+/sbx_pc/release_test/
 
 # Codegen bookkeeping with machine-specific absolute paths.
-/sbx_recomp/generated/default/codegen.d
-/sbx_recomp/generated/default/codegen.stamp
-/sbx_recomp/generated/default/codegen.build.stamp
+/sbx_pc/generated/default/codegen.d
+/sbx_pc/generated/default/codegen.stamp
+/sbx_pc/generated/default/codegen.build.stamp
 
 # Ghidra / editor droppings
 *.gpr

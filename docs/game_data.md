@@ -95,7 +95,7 @@ What this means for mods: entries can be changed or resized in place, but
 **adding entries to `BUILD.TOC`** overflows the TOC buffer and moves every
 `BUILD_CRS` id, unless the count at `0x825F0A90` and the 23,009
 immediates are patched to match. A tool that appends entries (GUT Archive
-Tools' `-a`) needs a matching patch in the recomp.
+Tools' `-a`) needs a matching patch in the port.
 
 ### Loose files (confirmed)
 
@@ -166,7 +166,7 @@ from the TOC.
 
 ### Patch data (`PATCH_DATA`)
 
-The recomp's patch loader replaces archive entries with loose files
+The port's patch loader replaces archive entries with loose files
 (`src/hooks/patch_loader.cpp`, `--patch_loader`):
 
 ```
@@ -664,7 +664,7 @@ becomes 3.5 + (width mm - 135) / 20 inches (rounded down to 0.5; 0.5 less
 under 175 mm), and grip scales with 1 + 3.67 x sqrt(radius x width).
 How many inch-ups the wheel shop offers is fixed per car id in the code
 (`sub_821ED5D8`): 20 minus the stock rim diameter, at most 4, and 0 for
-the cut cars (the recomp gives them 3 and 4, `--cut_car_wheels`).
+the cut cars (the port gives them 3 and 4, `--cut_car_wheels`).
 
 #### Paint (20-byte slots)
 
@@ -1557,7 +1557,7 @@ Cars from block 18 up never reach the stock path: when a car is set up
 fixed wheel per block: CON_X wheel 18 (its own), BOSS00 TA03 (n = 18),
 other rivals their own aftermarket wheels, and the four cut cars (blocks
 19-22) AD00. So the ECLI's own stock wheel (wheel 19, 643-645) is never
-used. The recomp (`src/hooks/cut_car_wheels.cpp`) keeps the ECLI at -1 so
+used. The port (`src/hooks/cut_car_wheels.cpp`) keeps the ECLI at -1 so
 it gets its own wheel, and gives the L86, S30 and T86 the BOSS00's wheel
 (`--cut_car_wheels`), or the LORRY's steel wheels (wheel 20) through the
 stock path (`--cut_car_steelies`).
@@ -1671,7 +1671,7 @@ differently.
 
 ## Not documented yet
 
-- XACT audio: what's needed to make it work in the recomp (known to the
+- XACT audio: what's needed to make it work in the port (known to the
   user, to be written down).
 - The car spec fields beyond those above, the wheel records (73), 83 and
   84-96, and which tuning level is which power or drive-train part.

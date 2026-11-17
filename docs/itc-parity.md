@@ -87,7 +87,7 @@ code; none changes the game's audio logic.
 3. **Movies through FFmpeg** (ported 2026-10-24, Vulkan build only, not yet
    built: `src/movies/`, `src/hooks/movies.cpp`, `cmake/ffmpeg.cmake`,
    `Passes::DrawMovie`; FFmpeg n9.0.2 and ITC's configs in
-   `sbx_recomp/thirdparty/`; SBX's Movie methods checked against ITC's, seven
+   `sbx_pc/thirdparty/`; SBX's Movie methods checked against ITC's, seven
    exact; ITC's `docs/native-movies.md`, 2026-10-25):
    the game's `Movie` class (vtable slots 0-7) on a player of our own (the
    asf demuxer, wmv3 and wmav2 decoders), frames drawn by the native
@@ -293,7 +293,7 @@ write SBX's version in SBX's style, behind its own flag. Nothing of ITC's
 is compiled in. The table below says how cleanly each of ITC's folders
 reads at SBX's addresses.
 
-Regenerate the grading (from `sbx_recomp/`):
+Regenerate the grading (from `sbx_pc/`):
 
     python tools\match_funcs.py <ITC-Recomp>\itc_recomp\generated\default generated\default -o matches_want.tsv --want <every address port_native.py reports D>
     python tools\port_native.py <ITC-Recomp>\itc_recomp\generated\default generated\default matches_want.tsv <ITC-Recomp>\itc_recomp\src --report port_report.tsv --summary port_summary.md

@@ -1,8 +1,8 @@
 # Shaders
 
 The game's shaders written as GLSL for the native renderer, one file per
-shader in `sbx_recomp/src/renderer/vulkan/glsl/game/`, made by
-`sbx_recomp/tools/shader_port/` from the game's shader files (see
+shader in `sbx_pc/src/renderer/vulkan/glsl/game/`, made by
+`sbx_pc/tools/shader_port/` from the game's shader files (see
 `docs/game_data.md`, "Shaders", for the file format and where they load).
 The part files' shaders (the cars' and the course objects' materials) have
 their own page for the mod tool: `docs/part_shaders.md`.
@@ -343,7 +343,7 @@ layouts (every other case a rectangle list), checked against their ports
 
 ## Changing and checking the ports
 
-From `sbx_recomp/tools/shader_port/` (`README.md` there has the details):
+From `sbx_pc/tools/shader_port/` (`README.md` there has the details):
 
 ```
 py port_all.py --out ../../src/renderer/vulkan/glsl/game --table ../../src/renderer/vulkan/game_shader_ports.h \

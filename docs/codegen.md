@@ -1,7 +1,7 @@
 # Codegen
 
-How the recompiled code in `sbx_recomp/generated/default` is made. All
-commands from `sbx_recomp/`.
+How the recompiled code in `sbx_pc/generated/default` is made. All
+commands from `sbx_pc/`.
 
 1. **Function hints.** `python tools\scan_ptrs.py ..\assets\default.xex.decrypt
    sbx_manifest.toml --toml sbx_functions.toml` scans `.rdata`/`.data` for

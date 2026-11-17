@@ -8,7 +8,7 @@ symbols. The data files the code reads are described in
 
 Status:
 
-- **Native**: plain C++ in `sbx_recomp/src/` that doesn't use the
+- **Native**: plain C++ in `sbx_pc/src/` that doesn't use the
   PowerPC context (`ctx`): normal arguments and host structs (it may
   still read and write guest memory through `src/guest.h` while
   recompiled code shares the data). The game reaches it without `ctx`,
@@ -16,7 +16,7 @@ Status:
   longer called (except behind a fallback flag or to check against it).
   The end state for every function.
 - **Overridden**: an `extern "C" REX_FUNC(sub_XXXXXXXX)` override in
-  `sbx_recomp/src/` (or a macro defining one) does the work instead of
+  `sbx_pc/src/` (or a macro defining one) does the work instead of
   the original: a thin adapter in front of native code, or a body that
   still uses `ctx` (calling guest code, reading registers, or a copy of
   the generated body with an edit, marked `PATCH:`). It may call the
@@ -28,7 +28,7 @@ Status:
 The generated code is never edited in place: every build regenerates it.
 A function usually moves from recompiled or Wrapped to Overridden to
 Native as the `ctx` edge moves up through its callers.
-`sbx_recomp/tools/check_function_statuses.py` checks this column against
+`sbx_pc/tools/check_function_statuses.py` checks this column against
 `src/` (an override marked Native, a status with no override, an override
 with no row); run it after changing either.
 

@@ -1,16 +1,17 @@
 ## Build and run
 
-On Windows, from `sbx_recomp/`:
+On Windows, from `sbx_pc/`:
 
 ```bat
 codegen.bat           rem configure, build rexglue, recompile the XEX, configure again
 build_vulkan.bat      rem out\build\win-amd64-relwithdebinfo-vulkan\sbx.exe
 run_vulkan.bat        rem the game, against ..\assets, on the native Vulkan renderer
 run_vulkan.bat --log_level=debug   rem the same, with debug logging
-package_release.bat   rem release\sbx-vulkan.zip: sbx.exe, its DLLs and a launcher (no game files)
+py build_vulkan_release.py   rem release\sbx-v<version>-*: Windows .zip, Linux .tar.gz, assets .zip
 ```
 
-- Build logs: `out\codegen.log`, `out\build_vulkan.log`.
+- Build logs: `out\codegen.log`, `out\build_vulkan.log`,
+  `out\build_vulkan_linux.log`.
 - Settings: `sbx.toml` next to `sbx.exe`, flat `name = value` lines the SDK
   loads at every start (before `REX_<NAME>` variables and the command line,
   which win over it). F4's Save button writes the settings changed in the menu
@@ -21,6 +22,16 @@ package_release.bat   rem release\sbx-vulkan.zip: sbx.exe, its DLLs and a launch
   (fullscreen, mouse and keyboard, cutscenes skipped, `new_music_roll = 1`);
   it only sets `REX_GAME_DATA_ROOT` itself now. Releases don't ship the file,
   so an update unzipped over a game doesn't overwrite its settings.
+- `build_vulkan_release.py [preset]` asks for a version and packages the
+  program only (no game files): `sbx.exe` with its DLLs and `run.bat` in a
+  `.zip`; the Linux build, if there is one, as `sbx`, its `.so` files and
+  `run.sh` in a `.tar.gz` (a tar keeps the executable bits); and
+  `PATCH_DATA`/`ADDON_DATA` in an assets `.zip`. It strips the Linux debug
+  info in WSL (about 178 MB down to 53 MB). Then it refreshes the Windows
+  test install in `release_test/sbx/`.
+- `build_vulkan.bat` builds Windows first, then Linux (see "Linux" below).
+  The Linux half runs only if the Windows build succeeded; `SBX_NO_LINUX=1`
+  skips it.
 - The emulated GPU build (`build.bat`, `run.bat`, `run-debug.bat`) was removed on
   2026-10-26; `cull_emulated_build.ps1` deletes what's left of it. The SDK's Xenos
   plugin is no longer built.
@@ -33,7 +44,7 @@ package_release.bat   rem release\sbx-vulkan.zip: sbx.exe, its DLLs and a launch
   custom music (`docs/custom_music.md`); the rest of the addon loader isn't
   built yet.
 - After a fresh clone or a submodule update, run
-  `python sbx_recomp/tools/fix_symlink_stubs.py` first
+  `python sbx_pc/tools/fix_symlink_stubs.py` first
   (`docs/codegen.md`, "Windows build gotchas").
 - The user runs the game: they play, quit, and say what they saw. Logs go
   to `logs/` next to `sbx.exe`.
@@ -47,7 +58,40 @@ package_release.bat   rem release\sbx-vulkan.zip: sbx.exe, its DLLs and a launch
   copy its generated body into an override and edit it there
   (`src/hooks/post_race.cpp`): edits in `generated/` are overwritten.
   Give each override a row in `docs/functions.md` and run
-  `python sbx_recomp/tools/check_function_statuses.py`.
+  `python sbx_pc/tools/check_function_statuses.py`.
 - "Call to invalid or unregistered function at guest address X" at run
   time: add `0xX = {}` under `[entrypoint.functions]` in
   `sbx_manifest.toml` and rebuild (`docs/codegen.md`).
+
+## Linux
+
+From `sbx_pc/`, on Linux or in WSL:
+
+```sh
+./setup_linux.sh      # once (Ubuntu 24.04): clang 20, lld, CMake, Ninja, X11/Wayland/audio headers
+./build_vulkan.sh     # out/build/linux-amd64-relwithdebinfo-vulkan/sbx
+./run_vulkan.sh       # the game, against ../assets
+```
+
+- `build_vulkan.sh [preset]` takes the `linux-amd64-*` presets in
+  `CMakePresets.json`. `build_vulkan.bat <win preset>` runs it in WSL with the
+  matching one (`win-amd64-debug` -> `linux-amd64-debug`).
+- WSL: the default distro, or `SBX_WSL_DISTRO=<name>`. It builds in the same
+  checkout through `/mnt/<drive>`, which is slower than the Windows build;
+  the first build compiles the SDK and generated code again for Linux.
+- Both builds share `generated/`. Codegen writes only files whose content
+  changed, and Linux and Windows codegen give the same output, so one build
+  doesn't make the other recompile the generated code.
+- Each build has its own `out/build/<preset>-vulkan/` folder. The ninja
+  depfile copies live there, so `generated/default/codegen.d` being
+  rewritten with the other platform's paths does no harm.
+- A Windows checkout seen from WSL belongs to another user, and git refuses
+  to work in it. The build calls git (SDK patches, version string), so
+  `build_vulkan.sh` allows every directory through `GIT_CONFIG_*`
+  environment variables for that run only; no git config is changed.
+- Run `fix_symlink_stubs.py` on Windows first, as for the Windows build: it
+  replaces the stubs both builds read (libmspack, o1heap).
+- The compiler is the newest `clang-<version>` (20 or later) found, else a
+  plain `clang` if it's 20 or later. clang 20 is what the SDK's Linux CI
+  uses.
+

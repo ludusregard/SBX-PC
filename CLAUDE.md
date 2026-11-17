@@ -1,8 +1,9 @@
 # Working on this repo
 
-A static recompilation of Shutoko Battle X (Xbox 360) on ReXGlue
-(`rexglue-sdk/`, submodule pinned to v0.10.0; SDK changes go in
-`patches/rexglue-sdk-vulkan/`).
+SBX PC: a native PC port of Shutoko Battle X (Xbox 360). It started as a
+static recompilation on ReXGlue (`rexglue-sdk/`, submodule pinned to
+v0.10.0; SDK changes go in `patches/rexglue-sdk-vulkan/`), and the game
+is being rewritten as native C++ subsystem by subsystem.
 
 ## Docs
 
@@ -13,7 +14,7 @@ Read the relevant doc before making changes; update it as you learn.
 - `docs/functions.md`: known functions, addresses, data, overrides. Check
   before naming, hooking or overriding a function; add every function or
   address worked out, and a row for every override (run
-  `sbx_recomp/tools/check_function_statuses.py` after adding or removing
+  `sbx_pc/tools/check_function_statuses.py` after adding or removing
   one).
 - `docs/native-code-rules.md`: rules for writing new code for the project,
   check before writing any game related code whether hook or native.

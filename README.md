@@ -1,12 +1,14 @@
-# Shutoko Battle X Static Recompilation
+# SBX PC
 
-A native Windows port of *Shutoko Battle X* (Xbox 360, 2006), made by
-statically recompiling the game's PowerPC code to x86-64 with
-[ReXGlue](https://github.com/rexglue/rexglue-sdk). It follows
+A PC port of *Shutoko Battle X* (Xbox 360, 2006) for Windows and
+Linux. It has ReXGlue roots [ReXGlue](https://github.com/rexglue/rexglue-sdk),
+but the game is being rewritten subsystem by substem for modding and extendabillity.
 [ITC-Recomp](https://github.com/Spooky098529/ITC-Recomp), the recompilation
-of the game's US release, *Import Tuner Challenge*.
+of the game's US release, *Import Tuner Challenge* has been pulled at times to helped
+with progress.
 
-Built with assistance of Claude with manual review and testing done by myself.
+This project was built with assistance of Claude with manual review and testing done by myself.
+Much of the research into the game was being done by myself and the community prior to this project.
 
 <img width="3840" height="2160" alt="image" src="https://github.com/user-attachments/assets/f149178a-bdee-4b87-b07a-75e82796e35c" />
 
@@ -37,21 +39,12 @@ Built with assistance of Claude with manual review and testing done by myself.
 
 ## Install
 
-Build it from source (below), or run `sbx_recomp\package_release.bat` to make
-`release\sbx-vulkan.zip`: the program only, with no game files. The game's files go in
+Build it from source (below), then run `py sbx_pc\build_vulkan_release.py`
+to package it in `sbx_pc\release\`: a Windows `.zip`, a Linux `.tar.gz`
+(when the Linux build exists) and an assets `.zip`. The packages hold the
+program only, with no game files. The game's files go in
 `assets/` (`default.xex` and `DATA/`); `assets/PATCH_DATA/` (replacements)
 and `assets/ADDON_DATA/` (new content, not used yet) are part of this repo.
-
-## Running it
-
-| Command | What it does |
-|---|---|
-| `run.bat` | The game, on the native Vulkan renderer. |
-| `run.bat --log_level=debug` | The same, with debug logging (written to `logs/`). |
-
-Options can be added after either, e.g. `run.bat --fullscreen=true`;
-they last for that run only. Built from source, the same is
-`sbx_recomp\run_vulkan.bat`.
 
 ## Settings
 
@@ -64,7 +57,8 @@ command line win over it.
 ## Reporting problems
 
 Play with `run.bat --log_level=debug`, then open an issue describing what you saw, and
-attach the newest file from the `logs` folder.
+attach the newest file from the `logs` folder. My messages are always open so don't
+hesitate to shoot me a message on Discord or any socials if you have issues/feedback.
 
 ## Building from source
 
@@ -72,8 +66,8 @@ You need git, clang 19 or newer (`clang`/`clang++` on `PATH`), CMake (3.25
 or newer), Ninja, Python 3 and the Vulkan SDK.
 
 ```bat
-python sbx_recomp\tools\fix_symlink_stubs.py
-cd sbx_recomp
+python sbx_pc\tools\fix_symlink_stubs.py
+cd sbx_pc
 codegen.bat
 build_vulkan.bat
 run_vulkan.bat
@@ -81,7 +75,22 @@ run_vulkan.bat
 
 Clone with its submodules. `fix_symlink_stubs.py` replaces the SDK's
 symlink stubs with real files (git on Windows checks symlinks out as text
-files). This builds `sbx_recomp/out/build/win-amd64-relwithdebinfo-vulkan/sbx.exe`.
+files). This builds `sbx_pc/out/build/win-amd64-relwithdebinfo-vulkan/sbx.exe`.
+
+`build_vulkan.bat` then builds the Linux version in WSL
+(`sbx_pc/out/build/linux-amd64-relwithdebinfo-vulkan/sbx`). That needs
+WSL with Ubuntu 24.04 and, once, `./setup_linux.sh` run from `sbx_pc`
+inside it. Set `SBX_NO_LINUX=1` to build Windows only. On Linux itself:
+
+```sh
+cd sbx_pc
+./setup_linux.sh      # once: clang 20, CMake, Ninja, X11/Wayland/audio headers
+./build_vulkan.sh
+./run_vulkan.sh
+```
+
+Both builds share `sbx_pc/generated/` and need the game's
+`assets/default.xex`, since codegen reruns whenever its inputs change.
 
 ## Credits and links
 

@@ -77,7 +77,7 @@ In stages:
    (once the car id to model mapping is known).
 2. **Car registry in the addon loader.** A mod car is a folder, e.g.
    `ADDON_DATA/<name>/CARS/<car>/`, with a manifest (TOML or JSON),
-   its spec record, models, textures and name strings. The recomp gives it
+   its spec record, models, textures and name strings. The port gives it
    an id from 72 up and serves it through hooks:
    - **Specs:** extend the table in memory after load.
    - **Lists and counts:** patch or hook the comparisons against 72 that

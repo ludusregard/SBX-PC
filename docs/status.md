@@ -41,7 +41,7 @@ In and tested (2026-11-09): `native_menu_sounds`,
 `native_load_poll`, `native_car_makers`, `native_texture_compression`,
 `native_save_interface`). Every override in
 `src/` has a row in `docs/functions.md`
-(`sbx_recomp/tools/check_function_statuses.py`: no errors).
+(`sbx_pc/tools/check_function_statuses.py`: no errors).
 
 ## Fixes
 

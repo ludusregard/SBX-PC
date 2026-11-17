@@ -38,6 +38,6 @@ These requirements apply to all code in `src/game/`.
 
 ## Generators
 
-- Generators in `sbx_recomp/tools/native_gen/` are tools for investigating and reading original implementations.
+- Generators in `sbx_pc/tools/native_gen/` are tools for investigating and reading original implementations.
 - Generated output is reference material, not production code.
 - Never commit generator output directly without rewriting it into the required native C++ style.
