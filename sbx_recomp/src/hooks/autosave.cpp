@@ -47,7 +47,7 @@
 #include "hooks/native_calls.h"
 
 #ifdef SBX_VULKAN_RENDERER
-#include "native/overlay.h"
+#include "renderer/vulkan/overlay.h"
 #endif
 
 #include <rex/cvar.h>
@@ -113,7 +113,7 @@ bool g_left_idle = false;    // the device has left idle since the write
 
 void Notify(const char* text) {
 #ifdef SBX_VULKAN_RENDERER
-  native::overlay::Notify(text);
+  renderer::overlay::Notify(text);
 #else
   (void)text;
 #endif

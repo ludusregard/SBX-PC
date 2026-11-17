@@ -519,6 +519,28 @@ extern "C" REX_FUNC(sub_8211D4B8) {
   g_added = added_before;
 }
 
+// RaceHud::RunCountdown (sub_82210730): r3 the HUD. Runs the countdown's
+// UI movie (+612) and stores what it returns, whether it's still going, in
+// +436; the race's countdown state (Update sub_8216AA40) moves on once +436
+// is 0. It's called from that state's Draw (sub_8216A1C8), so on every pass,
+// and the Update reads what the last pass left. A render-only pass's result
+// isn't the logic pass's (its movie is replayed or skipped), and a replay
+// started after a race could stay in the countdown state for good: the race
+// HUD stayed up and the pause menu was the race's (John's test, 2026-11-13).
+// On render-only passes +436 keeps the logic pass's value.
+extern "C" REX_FUNC(sub_82210730) {
+  REX_FUNC_PROLOGUE();
+  if (!REXCVAR_GET(subtick) || !RenderOnly()) {
+    __imp__sub_82210730(ctx, base);
+    return;
+  }
+  constexpr uint32_t kCountingDown = 436;
+  const uint32_t hud = ctx.r3.u32;
+  const uint32_t counting_down = guest::LoadU32(base, hud + kCountingDown);
+  __imp__sub_82210730(ctx, base);
+  guest::StoreU32(base, hud + kCountingDown, counting_down);
+}
+
 // The garage stage's step (sub_8217DD48): r3 the stage's holder (+0 the
 // stage, 6208 bytes), r5 whether to keep the camera's pitch in range. Moves
 // the camera around the car and turns the car, then poses and draws the car

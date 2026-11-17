@@ -210,6 +210,7 @@ with no row); run it after changing either.
 | `sub_8211B9D0` | `TickerText::Offset` | Wrapped | r3 the movie, r4 the text's draw (+0 x, +8 width, +120 id): the x a scrolling text is drawn at, from its record in the movie's node map (movie+39884: +4 set, +8 frame count, +12 frames before it scrolls, +16 speed). Between ticks taken between the last two frame counts (`src/subtick/per_frame_logic.cpp`). |
 | `sub_8211BB10` | `TickerText::Step` | Wrapped | r3 the movie, r4 the text's id: counts a frame on its record. Skipped on render-only passes (`src/subtick/per_frame_logic.cpp`). |
 | `sub_821196D0` | `AudioManager::PlayCue` | Wrapped | From the AudioManager's 2D and 3D cue slots (`sub_82119808`, `sub_821197D8`; its vtable is `0x82008318`, so `MenuSound::Play`'s slot 10 is `sub_82119808`). Nothing is started while the menus' drawing is redrawn between ticks (`src/subtick/per_frame_logic.cpp`). |
+| `sub_82210730` | `RaceHud::RunCountdown` | Wrapped | r3 the HUD: runs the countdown movie (+612) and stores whether it's still going in +436, which the countdown state's Update (`sub_8216AA40`) waits on. Called from that state's Draw (`sub_8216A1C8`), so on every pass; on render-only passes +436 keeps the logic pass's value (`src/subtick/per_frame_logic.cpp`): a replay after a race stayed in the countdown state, with the race HUD and the race's pause menu. |
 | `sub_82225DE0` | `ParkingArea::DrawScene` | Wrapped | r3 the area (`[0x8280DE60]`): its camera from +592 (eye) and +608 (target), then its scenery (`Scenery::Draw` on +552). From the parking area's handler `sub_8222C840` (message 0), which then draws the cars (draw object +5004 = 1, `sub_82225918`, `sub_820C93A8`, `sub_820C5BA0`). Drawn again between ticks with `--subtick_menu_3d` (`src/subtick/per_frame_logic.cpp`). |
 | `sub_8217DD48` | `GarageStage::Step` | Wrapped | r3 the stage's holder (+0 the stage, 6208 bytes, `VirtualAlloc`), r5 keep the camera's pitch in range: moves the camera around the car (`sub_82179EE8` → `CameraPass::Update`), turns and poses the car (`sub_8217A9D0`) and draws it on its stage (`sub_820C5BA0`, `sub_820C8238`). Called from the garage's and shops' messages, once a tick; drawn again between ticks with `--subtick_menu_3d` (`src/subtick/per_frame_logic.cpp`). |
 | `sub_82585FD8` | `UiMovie::ApplyAnimation` |  | Applies each playing animation's tracks with t = (time - k0) / (k1 - k0), clamped. |
@@ -2137,7 +2138,7 @@ The xaudio' set-ups, resets, small setters, copies and getters (`src/game/xaudio
 The game records its drawing into command lists, which the render thread
 replays through the handler table at `0x8264EB40` (ids 1-35; 0, 36 and 37
 do nothing). Every handler is wrapped (`REPLAY_COUNTED_HANDLER` in
-`src/native/replay_hooks.cpp`) so the native renderer sees each command
+`src/renderer/replay_hooks.cpp`) so the native renderer sees each command
 before and after it runs. The names are from what each handler does to
 the graphics library's device. Single commands come through a second
 table at `0x8264EAA8` with the same ids.

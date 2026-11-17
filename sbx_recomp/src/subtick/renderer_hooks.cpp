@@ -23,7 +23,7 @@
 #include "subtick/input.h"
 
 #ifdef SBX_VULKAN_RENDERER
-#include "native/renderer.h"
+#include "renderer/renderer.h"
 #endif
 
 #include <rex/cvar.h>
@@ -49,8 +49,8 @@ constexpr uint32_t kMainCameraViewProjection = 0x826AA8E0 + 0x90;
 // renderer's own passes (--gbuffer). In a race only (the pass array holds the
 // race's camera then); with --subtick it's this frame's blended camera
 // (CarTransforms_RebuildCamera), still in place until CarTransforms_EndFrame.
-native::ListCamera CaptureListCamera(uint8_t* base) {
-  native::ListCamera camera;
+renderer::ListCamera CaptureListCamera(uint8_t* base) {
+  renderer::ListCamera camera;
   if (!subtick::GameMessages_InRace()) {
     return camera;
   }
@@ -105,7 +105,7 @@ void PaceNextPass(PPCContext& ctx, uint8_t* base) {
 extern "C" REX_FUNC(sub_82092E60) {
   REX_FUNC_PROLOGUE();
 #ifdef SBX_VULKAN_RENDERER
-  native::Renderer_OnListHandedOver(!subtick::GameMessages_IsRenderOnlyPass(),
+  renderer::Renderer_OnListHandedOver(!subtick::GameMessages_IsRenderOnlyPass(),
                                     CaptureListCamera(base));
 #endif
   __imp__sub_82092E60(ctx, base);
@@ -133,9 +133,9 @@ extern "C" REX_FUNC(sub_82092E60) {
 #ifdef SBX_VULKAN_RENDERER
 extern "C" REX_FUNC(sub_82091FB0) {
   REX_FUNC_PROLOGUE();
-  native::Renderer_OnReplayStart();
+  renderer::Renderer_OnReplayStart();
   __imp__sub_82091FB0(ctx, base);
-  native::Renderer_EndFrame();
+  renderer::Renderer_EndFrame();
 }
 #endif
 

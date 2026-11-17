@@ -57,7 +57,7 @@ In and tested (2026-11-09): `native_menu_sounds`,
   image at an address after the game had freed it and put a texture
   there. A memcpy write over the start of a resolve destination not
   resolved into since drops it from the addresses draws sample
-  (`TextureCache::State::MarkWritten`, `src/native/textures.cpp`;
+  (`TextureCache::State::MarkWritten`, `src/renderer/vulkan/textures.cpp`;
   2026-11-09, not yet confirmed in play: the bug is rare). A button
   bitmap sometimes drawn as a faint quad in the sub-menus may be the same
   thing (its memory where a glow or blur target was); to watch.
@@ -82,11 +82,22 @@ In and tested (2026-11-09): `native_menu_sounds`,
     (`src/hooks/title_screen.cpp`): the first version overrode it too.
   - G-buffer lite: `--gbuffer` (off by default) builds the 3D view's depth
     (as drawn, and view distance) and the camera's motion vectors into our own
-    buffers at its opaque resolve (`--gbuffer_resolve`, 1), from camera pass
-    0's view-projection handed over with each command list.
+    buffers at its second color resolve (`--gbuffer_resolve`, 2: the whole
+    scene; the cars, and the car body around the cockpit, are drawn after the
+    first, which has only the scenery; John's test, 2026-11-16), from camera
+    pass 0's view-projection handed over with each command list.
     `--gbuffer_debug` 1-4 draws one over the frame (distance, motion, the
     game's own velocity buffer, raw depth). Nothing else uses the buffers yet
-    (`BuildGBuffer` in `src/native/passes.cpp`, `glsl/gbuffer*.frag`).
+    (`BuildGBuffer` in `src/renderer/vulkan/passes.cpp`, `glsl/gbuffer*.frag`).
+  - Pipeline warm-up (2026-11-16): the pipelines earlier sessions drew with
+    are made at start on a worker thread (`cache/pipeline_list.bin`,
+    `--native_renderer_warm_pipelines`), against the first-draw stutter; see
+    "Pipeline warm-up" in `docs/native-renderer-port.md`. Not tested yet.
+  - Frame dumps (2026-11-16): F4, Renderer tab, "Dump this frame" writes the
+    next frame's draws, constants and textures (`frame.json`, DDS files)
+    into `frame_dumps/` next to `sbx.exe`; `tools/frame_dump/describe.py`
+    names them. See "Frame dumps" in `docs/native-renderer-port.md`. Not
+    tested yet.
 - Saved settings: F4's Save button writes the settings changed in the menu to
   `sbx.toml` next to `sbx.exe`, which loads at every start; launch options
   still win over it (`src/base/settings_file.cpp`, "Settings" in

@@ -8,7 +8,7 @@
 #include "subtick/per_frame_logic.h"
 
 #ifdef SBX_VULKAN_RENDERER
-#include "native/textures.h"
+#include "renderer/vulkan/textures.h"
 #endif
 
 #include <fmt/format.h>
@@ -324,7 +324,7 @@ void GameMessages_OnPassFinished(uint8_t* base) {
   // race.
 #ifdef SBX_VULKAN_RENDERER
   if (g_in_race && !g_race_draw_step_seen) {
-    native::TextureCache_RaceLeft();  // frees the race's textures
+    renderer::TextureCache_RaceLeft();  // frees the race's textures
   }
 #endif
   g_in_race = g_race_draw_step_seen;

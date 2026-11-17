@@ -13,7 +13,7 @@
 #ifdef SBX_VULKAN_RENDERER
 #include "base/log_sdk.h"
 #include "movies/movie.h"
-#include "native/app_window.h"
+#include "renderer/app_window.h"
 #endif
 
 class SbxApp : public rex::ReXApp {
@@ -54,13 +54,13 @@ class SbxApp : public rex::ReXApp {
   }
 
 #ifdef SBX_VULKAN_RENDERER
-  // The native renderer (src/native/) draws in its own window: the SDK's is
-  // hidden and gets its events (src/native/app_window.cpp).
+  // The native renderer (src/renderer/) draws in its own window: the SDK's is
+  // hidden and gets its events (src/renderer/app_window.cpp).
   bool SetupPresentation() override {
     if (!rex::ReXApp::SetupPresentation()) {
       return false;
     }
-    native::AppWindow_SetSdkWindow(window());
+    renderer::AppWindow_SetSdkWindow(window());
     return true;
   }
 

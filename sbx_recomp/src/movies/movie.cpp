@@ -12,8 +12,8 @@
 
 #include "base/log.h"
 #include "movies/player.h"
-#include "native/renderer.h"
-#include "native/state.h"
+#include "renderer/renderer.h"
+#include "renderer/state.h"
 
 namespace movies::movie {
 
@@ -176,7 +176,7 @@ void RenderFrame(uint8_t* base, uint32_t movie) {
     return;
   }
   if (const Frame* frame = player->CurrentFrame()) {
-    native::Renderer_DrawMovie(base, guest::LoadU32(base, native::kDevicePointer), frame->width,
+    renderer::Renderer_DrawMovie(base, guest::LoadU32(base, renderer::kDevicePointer), frame->width,
                                frame->height, frame->y.data(), frame->u.data(),
                                frame->v.data());
   }

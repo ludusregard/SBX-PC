@@ -4,7 +4,7 @@ The game's functions rewritten as our own C++, one subsystem at a time,
 each behind its own `--native_<name>` flag. On the F4 menu they're the
 Overrides tab, grouped by the subsystem's first word (Race, Cars, Scene,
 Menus and UI, Data and Saves, Audio, Runtime; `OverrideGroup`,
-`src/native/overlay.cpp`), so a new flag named like the others shows in
+`src/renderer/vulkan/overlay.cpp`), so a new flag named like the others shows in
 its group with nothing added there. The fixes that had a tab of their own
 are groups of the Hooks tab ("Fixes: Race", "Fixes: Interpolation").
 Every flag is on by default. With a flag off the recompiled

@@ -8,7 +8,8 @@ project(sbx LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# The native Vulkan renderer (src/native/, from ITC-Recomp; see
+# The native renderer (src/renderer/, its Vulkan back end in
+# src/renderer/vulkan/; from ITC-Recomp, see
 # docs/native-renderer-port.md) is the only renderer. The emulated GPU build
 # (build.bat, run.bat) and the SDK's Xenos plugin are gone.
 
@@ -198,19 +199,26 @@ list(APPEND SBX_SOURCES
     src/base/log_sdk.cpp
     src/base/settings_file.cpp
     src/helpers/executable.cpp
-    src/native/app_window.cpp
-    src/native/buffers.cpp
-    src/native/disk_cache.cpp
-    src/native/draw_packets.cpp
-    src/native/gpu_link.cpp
-    src/native/overlay.cpp
-    src/native/passes.cpp
-    src/native/renderer.cpp
-    src/native/replay_hooks.cpp
-    src/native/shaders.cpp
-    src/native/state.cpp
-    src/native/textures.cpp
-    src/native/vulkan_functions.cpp
+    src/renderer/app_window.cpp
+    src/renderer/buffers.cpp
+    src/renderer/command_lists.cpp
+    src/renderer/disk_cache.cpp
+    src/renderer/draw_packets.cpp
+    src/renderer/frame_dump.cpp
+    src/renderer/gpu_link.cpp
+    src/renderer/gpu_memory.cpp
+    src/renderer/pipeline_list.cpp
+    src/renderer/replay_hooks.cpp
+    src/renderer/state.cpp
+    src/renderer/vulkan/overlay.cpp
+    src/renderer/vulkan/passes.cpp
+    src/renderer/vulkan/port_spirv.cpp
+    src/renderer/vulkan/renderer.cpp
+    src/renderer/vulkan/shader_ports.cpp
+    src/renderer/vulkan/shaders.cpp
+    src/renderer/vulkan/textures.cpp
+    src/renderer/vulkan/vulkan_functions.cpp
+    src/renderer/vulkan/window.cpp
     src/movies/movie.cpp
     src/hooks/movies.cpp
 )
@@ -292,7 +300,7 @@ target_include_directories(sbx PRIVATE
     ${REXSDK_DIR}/thirdparty/vulkan-headers/include
     ${REXSDK_DIR}/thirdparty/xxHash)
 
-# The overlay's ImGui back-ends (src/native/overlay.cpp): SDL3 and
+# The overlay's ImGui back-ends (src/renderer/vulkan/overlay.cpp): SDL3 and
 # Vulkan, from the SDK's ImGui checkout. ImGui itself is the SDK's, in
 # rexruntime (all its symbols exported); Vulkan is loaded at runtime, so
 # the Vulkan back-end takes its functions from us (no prototypes).

@@ -19,6 +19,7 @@ the sbxr_tools repo (https://github.com/ludusregard/sbxr_tools).
 | `check_function_statuses.py` | yes | Checks the Status column of `docs/functions.md` against the overrides in `src/`; reports only. Run after changing either. |
 | `prune.py` | yes | Drops hints implicated in "Unresolved branch" sites. |
 | `pfm_to_png.py`, `rainbow_draws.py` | later | Read ITC's native renderer dumps; need that renderer ported. |
+| `frame_dump/describe.py` | yes (new) | Lists a frame dump's draws (F4, Renderer tab, "Dump this frame") with the game's names for their shaders, constants and textures. See "Frame dumps" in `docs/native-renderer-port.md`. |
 | `read_capture.py` | later | Reads `--capture_dir` state captures (ITC's `src/debug/state_capture.cpp`). |
 | `profile_render_thread.sh` | later, Linux | `perf` profile of the render thread. |
 | `fetch_vc_redist.py`, `xwin_case_links.py` | Linux cross-builds | For building Windows zips on Linux with xwin; not needed on Windows. |

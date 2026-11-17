@@ -4,7 +4,7 @@ Written 2026-10-25. Built the same day: the Vulkan build's overlay has the tabs,
 The emulated GPU build has the SDK's live ImGui overlay (settings toggled
 while the game runs); the Vulkan build doesn't, because the overlay draws
 through the SDK's window and presenter, and the native renderer hides that
-window and presents to its own (`src/native/app_window.cpp`: "exclusive
+window and presents to its own (`src/renderer/app_window.cpp`: "exclusive
 mode", the SDK's window hidden, its events forwarded).
 
 ## What's there already
@@ -15,7 +15,7 @@ mode", the SDK's window hidden, its events forwarded).
   `rex::ui::ImGuiDrawer` (see the commented `OnCreateDialogs` and
   `CreateAchievementsOverlay` in `src/sbx_app.h`), on the SDK's presenter.
 - Our renderer owns the SDL3 window, the Vulkan device, queue and
-  swapchain (`src/native/renderer.cpp`), and draws each frame's last pass
+  swapchain (`src/renderer/vulkan/renderer.cpp`), and draws each frame's last pass
   (the gamma pass, `Passes::ApplyGamma`) before the present.
 - Settings are cvars (`REXCVAR_*` in shared code, `ITC_FLAG_*` in the
   native renderer, which map to the same command line).
@@ -65,4 +65,4 @@ mode", the SDK's window hidden, its events forwarded).
 ## Size
 
 A self-contained job: about a day with testing. Nothing in the game's code
-changes; it's all in `src/native/` and the build.
+changes; it's all in `src/renderer/` and the build.

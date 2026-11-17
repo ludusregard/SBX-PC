@@ -1,13 +1,97 @@
 # Native renderer port (SBX)
 
 Porting ITC-Recomp's native Vulkan renderer (`itc_recomp/src/native/`, on
-its `rexglue-removal-project` branch, 2026-10-23) into `src/native/`. Plan:
+its `rexglue-removal-project` branch, 2026-10-23) into `src/renderer/`. Plan:
 `claude/sbx-native-vulkan-plan.md` in the SBX Recomp project. Address map:
 `claude/sbx-native-renderer-address-map.md`.
 
 The native renderer is the only build now (`build_vulkan.bat`). It was an option
 (`SBX_NATIVE_RENDERER`, off by default) until 2026-10-26, when the emulated GPU
 build was removed and the define renamed `SBX_VULKAN_RENDERER` (always set).
+
+## Layout (2026-11-14, split finished 2026-11-16)
+
+The renderer moved from `src/native/` (a name that now also fits the native
+game code) to `src/renderer/`, namespace `renderer`, split by what depends
+on Vulkan, so a DirectX back end can sit beside it later:
+
+- `src/renderer/`: what doesn't use Vulkan. `renderer.h` (the interface the
+  game side calls: list handover, movies, frame end, exit),
+  `command_lists.cpp` (the lists handed to the render thread: logic or
+  render-only, and their cameras), the guest side (`gpu_link.cpp`,
+  `replay_hooks.cpp`, `draw_packets.*`, `state.*`: the device fields and the
+  recorded command list), `buffers.*` (vertex and index data in guest
+  memory), `app_window.*`, `disk_cache.*` (the cache folder),
+  `pipeline_list.*` (the pipelines to make at start, below), `frame_dump.*`
+  (frame.json and DDS writing, below), `frame_costs.h`, `gpu_memory.*`,
+  `xbox_gamma_table.h`.
+- `src/renderer/vulkan/`: the Vulkan back end. `renderer.cpp` (device,
+  swapchain, frame loop, dumps; it implements `renderer.h`), `window.*` (the
+  window, instance and surface made on the main thread, its size and the
+  resolution scale), `passes.*` (drawing the list), `textures.*`,
+  `overlay.*` (ImGui), `shaders.*` (the Xenos to SPIR-V translation and the
+  ports, `shader_ports.*`, `port_spirv.*`), `vulkan_functions.*`,
+  `device_context.h`, the generated SPIR-V headers, and `glsl/` (the GLSL
+  they're made from, `docs/shaders.md`).
+
+The command-line flags keep their `native_` names (`--native_shaders`, ...),
+so existing settings files still work.
+
+## Pipeline warm-up (2026-11-16)
+
+The first draw of each shader used to stutter: making a Vulkan pipeline the
+driver's cache doesn't hold takes 20-100 ms (17 pipelines in 475 ms on the
+first run after a build, 19 in 2.9 ms on the next, John's logs). The
+driver's cache (`cache/pipelines.bin`, a `VkPipelineCache`) was already
+kept; what was missing is making the pipelines before they're drawn.
+
+- Every pipeline a draw makes is added to `cache/pipeline_list.bin`
+  (`PipelineList`, `src/renderer/pipeline_list.*`): its shaders by
+  microcode hash (each shader's microcode is kept once, as the shaders are
+  made again from it: a build may translate or fit them differently), how
+  they connect (the interface), and the back end's words for the rest (for
+  Vulkan, the pipeline key after its handles). Nothing in it is Vulkan's.
+- At start (`Passes::Init`, `StartPipelineWarmUp`), the shaders, modules and
+  layouts for every listed pipeline are made on the render thread (quick:
+  ports are fitted, earlier translations come from `cache/shaders.bin`),
+  then a worker thread makes the pipelines into the shared cache. The
+  render thread takes them as they're done (`TakeWarmPipelines`, each
+  frame and when a draw needs one it doesn't have); a draw that needs one
+  before the worker gets to it makes it itself, and the worker's copy is
+  dropped. The log says how many were made and how long it took.
+- The pipeline cache is also written when the game's window closes
+  (`Renderer_OnExit`, from `app_window.cpp`), besides every 10 s.
+- `--native_renderer_warm_pipelines=false` turns the warm-up off (the list
+  is still kept).
+
+## Frame dumps (2026-11-16)
+
+F4's Renderer tab has a "Dump this frame" button: the next frame is written
+into a new folder `frame_dumps/frame_NNN` next to `sbx.exe` (or in
+`--render_frame_dump`):
+
+- `frame.json`: every draw in order (target, primitive, both shaders with
+  their hash, the port's hash and every float constant they read, the bool
+  and loop constants, render states, vertex fetches, textures with their
+  fetch constants decoded) and every resolve (source, destination, after
+  which draw, which of the main view's it is).
+- `textures/<address>_format<n>_<w>x<h>.dds`: each texture the frame read
+  from guest memory, untiled and byte-swapped as the renderer loads it,
+  every level and layer (cube maps as DDS cube maps), DX10 header. The
+  fetch constant's swizzle isn't applied (it's in frame.json). Resolve
+  destinations aren't written (their memory doesn't hold what was resolved
+  into them); the resolves are in `resolve_*.pfm`.
+- `shown.pfm` and `resolve_*.pfm`: the shown frame and the resolve
+  destinations, as with `--native_renderer_dump`, which also writes
+  `frame.json` now (it replaced `draws.txt`).
+
+`sbx_recomp/tools/frame_dump/describe.py <folder>` lists the draws with the
+game's names for them: the hand-written shader and its defines
+(`glsl/*/variants.txt`), each constant's name (`matWVPVS`, `DLightColor`,
+...; from `glsl/game/shaders.json`), each texture's sampler name (`tx0`,
+`spheretx0`, ...). `--ps <hash>` keeps one pixel shader's draws (for
+example the garage car's paint, to see its lights and maps),
+`--main-view` the 3D view's, `--resolves` lists the resolves in order.
 
 ## The main finding: SBX's graphics library is a different revision
 
@@ -113,7 +197,7 @@ patching).
 
 ## Done (2026-10-23: aiming at a first build)
 
-- `src/native/`: ITC's renderer, every ITC address replaced by SBX's
+- `src/renderer/`: ITC's renderer, every ITC address replaced by SBX's
   (function names, `__imp__` calls, the command handlers given to macros,
   and the data addresses: device pointer `0x8296E1F0`, command tables
   `0x8264EB40`/`0x8264EAA8`, constants `0x82000A24`/`0x82000940`).
