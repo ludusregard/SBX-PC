@@ -42,11 +42,16 @@
 // New content goes in ADDON_DATA, for the addon loader (docs/modding-plan.md),
 // which isn't built yet.
 //
+// A served file may have full-size textures in a sidecar beside it,
+// `<same name>.sbpr` (src/hooks/sidecar.cpp): sidecars aren't archive files
+// themselves, and are handed to the sidecar code with the files served.
+//
 // --patch_loader=false turns it all off.
 
 #include "hooks/patch_loader.h"
 
 #include "guest.h"
+#include "hooks/sidecar.h"
 
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -199,6 +204,9 @@ std::vector<Found> ScanFolder(const std::filesystem::path& dir, const std::strin
     }
     if (Upper(*name) == "LANGUAGE.XML") {
       continue;  // a language's settings, not an archive file
+    }
+    if (Upper(file.extension().string()) == ".SBPR") {
+      continue;  // a sidecar: read with the file it's beside
     }
     auto id = ParseId(*name, crs, any);
     if (!id) {
@@ -465,6 +473,13 @@ extern "C" REX_FUNC(sub_8209E348) {
   if (files.empty()) {
     return;
   }
+  std::vector<std::filesystem::path> served;
+  for (const Found& f : files) {
+    std::string relative = f.path;
+    std::replace(relative.begin(), relative.end(), '\\', '/');
+    served.push_back(g_game_data_root / relative);
+  }
+  sidecar::IndexSidecars(served);
   std::vector<Override> found;
   for (Found& f : files) {
     found.push_back({f.id, f.size, std::move(f.path)});

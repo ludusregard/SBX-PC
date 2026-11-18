@@ -245,7 +245,7 @@ with no row); run it after changing either.
 | `sub_8244D0A0` | `AudioRenderDriver::Register` | Overridden | r3 the driver object (callback argument +12, handle +16), r4 the mixer callback: `XAudioRegisterRenderDriverClient`. Reached only through a vtable. |
 | `sub_8244D128` | `AudioRenderDriver::Submit` | Overridden | r4 the mixed buffer (descriptor from `sub_82448738`): `XAudioSubmitRenderDriverFrame`. |
 | `sub_8244D188` | `AudioRenderDriver::Destroy` | Wrapped | Unregisters the client (`XAudioUnregisterRenderDriverClient`). |
-| `sub_8257C880` | `XPR::Create` |  | r3 the XPR object, r4 the loaded file: checks `XPR2`, copies the header to normal memory and the data to physical memory, relocates each `TX` resource (`docs/game_data.md`, "XPR2 loading"). Object: +0 header, +4 its size, +8 data, +12 its size, +16 records, +20 record count. |
+| `sub_8257C880` | `XPR::Create` | Wrapped | r3 the XPR object, r4 the loaded file: checks `XPR2`, copies the header to normal memory and the data to physical memory, relocates each `TX` resource (`docs/game_data.md`, "XPR2 loading"). Object: +0 header, +4 its size, +8 data, +12 its size, +16 records, +20 record count. The wrapper registers the stand-ins of a pack with a sidecar (`.sbpr`) with the renderer, after the original has relocated them (`src/hooks/sidecar.cpp`; `docs/game_data.md`, "Sidecar textures (SBPR)"). |
 | `sub_8257CA30` | `XPR::GetTexture` |  | r3 the XPR object, r4 an index: that resource's header; an index past the end gives resource 0. |
 | `sub_8257C7A0` | `XPR::FindTexture` |  | r3 the XPR object, r4 a name: the resource with that name, or 0. |
 | `sub_8257C9C0` | `XPR::Release` |  | Frees the header and data. |

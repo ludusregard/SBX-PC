@@ -183,6 +183,9 @@ class TextureCache {
   Hide debug_hide_ = Hide::kNone;
   bool base_level_only_ = false;
   bool verify_every_frame_ = false;
+  // --sidecar_textures as last seen (BeginFrame reloads everything when it
+  // changes).
+  bool sidecar_enabled_ = true;
   uint32_t debug_hide_value_ = 0;
   uint64_t generation_ = 0;
   uint64_t races_seen_ = 0;

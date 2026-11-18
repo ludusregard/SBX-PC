@@ -3,6 +3,7 @@
 
 #include "renderer/buffers.h"
 #include "renderer/gpu_memory.h"
+#include "renderer/sidecar_textures.h"
 #include "renderer/state.h"
 
 #include <algorithm>
@@ -583,6 +584,15 @@ struct TextureCache::State {
     uint64_t loaded_frame = 0;
     // The guest memory it's read from: base and mips (address, size).
     std::array<std::pair<uint32_t, uint32_t>, 2> ranges{};
+    // A sidecar's full-size texture drawn in the place of the guest's
+    // (renderer/sidecar_textures.h): the image is made from it, and the
+    // guest memory above only tells when the stand-in is gone. An 8888
+    // stand-in's components are stored B, G, R, which its fetch constant's
+    // swizzle puts right: for the full-size texture's R, G, B, the swizzle's
+    // first and third are swapped (swap_red_blue).
+    std::shared_ptr<const sidecar::Entry> sidecar;
+    std::shared_ptr<const sidecar::Image> sidecar_image;
+    bool swap_red_blue = false;
     std::unordered_map<uint32_t, VkImageView> views;  // by swizzle
     // A resolve destination: drawn into, never loaded.
     bool resolved = false;
@@ -656,6 +666,10 @@ struct TextureCache::State {
   void RetireMovedResolveDestinations(const Texture& t);
   static std::pair<uint32_t, uint32_t> ResolveRange(const Texture& t);
   void RetireLoaded();
+  // A loaded texture leaves the cache (retired, its ranges and entry
+  // dropped): one that is to be made again with or without its sidecar.
+  void Forget(Texture& t);
+  uint64_t sidecar_generation = 0;
   void DestroyRetired();
 
   // --log_gpu_memory: seconds since the cache started (set each frame), and
@@ -680,6 +694,7 @@ struct TextureCache::State {
   uint64_t Hash(uint8_t* base, const Texture& texture) const;
   VkImageView GetSwizzledView(Texture& texture, uint32_t swizzle, VkImageViewType natural);
   bool Upload(uint8_t* base, Texture& texture);
+  bool UploadSidecar(Texture& texture);
   VkCommandBuffer Uploads();
 };
 
@@ -781,12 +796,14 @@ void TextureCache::State::LogWriteSummary() {
 bool TextureCache::State::CreateTexture(Texture& t) {
   VkDevice device = context.device;
   const Layout& l = t.layout;
-  t.levels = t.resolved ? 1 : l.max_level + 1;
+  const sidecar::Image* full = t.sidecar_image.get();
+  t.levels = t.resolved ? 1 : full ? full->levels : l.max_level + 1;
   VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   info.flags = l.cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
   info.imageType = VK_IMAGE_TYPE_2D;
-  info.format = t.format.format;
+  info.format = full ? full->format : t.format.format;
   info.extent = t.resolved ? VkExtent3D{t.host_width, t.host_height, 1}
+                : full     ? VkExtent3D{full->width, full->height, 1}
                            : VkExtent3D{l.width, l.height, 1};
   info.mipLevels = t.levels;
   info.arrayLayers = l.layers;
@@ -855,6 +872,11 @@ bool TextureCache::State::CreateTexture(Texture& t) {
       size = std::min(size, kPhysicalMemorySize - address);
     }
   }
+  if (full) {
+    // The ranges above are the stand-in's; from here the full-size
+    // texture's format.
+    t.format = {full->format, full->block_width, full->block_height, full->bytes_per_block, 4};
+  }
   stats.textures++;
   return true;
 }
@@ -882,6 +904,9 @@ VkCommandBuffer TextureCache::State::Uploads() {
 }
 
 bool TextureCache::State::Upload(uint8_t* base, Texture& t) {
+  if (t.sidecar_image) {
+    return UploadSidecar(t);
+  }
   const Layout& l = t.layout;
   const Format& f = t.format;
   uint32_t out_bytes_per_block = OutBytesPerBlock(f);
@@ -952,6 +977,104 @@ bool TextureCache::State::Upload(uint8_t* base, Texture& t) {
   t.loaded = true;
   return true;
 }
+
+// A sidecar's full-size texture into its image, all its levels at once.
+bool TextureCache::State::UploadSidecar(Texture& t) {
+  const sidecar::Image& full = *t.sidecar_image;
+  VkDeviceSize needed = 0;
+  for (size_t size : full.level_sizes) {
+    needed += Align(uint32_t(size), 16);
+  }
+  if (staging_used + needed > kStagingSize) {
+    stats.deferred++;
+    return false;
+  }
+  ScopedCost cost(g_frame_costs.texture_ns);
+  g_frame_costs.textures++;
+  g_frame_costs.texture_bytes += needed;
+  Frame& frame_data = frames[frame];
+  std::vector<VkBufferImageCopy> copies;
+  for (uint32_t level = 0; level < full.levels; level++) {
+    std::memcpy(frame_data.staging_mapped + staging_used,
+                full.data.data() + full.level_offsets[level], full.level_sizes[level]);
+    VkBufferImageCopy copy{};
+    copy.bufferOffset = staging_used;
+    copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
+    copy.imageExtent = {std::max(full.width >> level, 1u), std::max(full.height >> level, 1u),
+                        1};
+    copies.push_back(copy);
+    staging_used += Align(uint32_t(full.level_sizes[level]), 16);
+  }
+  VkCommandBuffer commands = Uploads();
+  VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+  barrier.srcAccessMask = 0;
+  barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barrier.image = t.image;
+  barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, t.levels, 0, 1};
+  vk::vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+  vk::vkCmdCopyBufferToImage(commands, frame_data.staging, t.image,
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, uint32_t(copies.size()),
+                             copies.data());
+  barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  vk::vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                               VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                           0, 0, nullptr, 0, nullptr, 1, &barrier);
+  stats.loaded_bytes += needed;
+  stats.loaded++;
+  t.loaded = true;
+  return true;
+}
+
+void TextureCache::State::Forget(Texture& t) {
+  Retire(t);
+  for (const auto& [address, size] : t.ranges) {
+    if (!size) {
+      continue;
+    }
+    auto [first, last] = by_address.equal_range(address);
+    for (auto it = first; it != last;) {
+      it = it->second.second == &t ? by_address.erase(it) : std::next(it);
+    }
+  }
+  write_snapshots.erase(t.layout.base_address ? t.layout.base_address : t.layout.mip_address);
+  TextureKey key = t.key;  // not a reference into the node erased
+  textures.erase(key);
+}
+
+namespace {
+
+// The fetch constant's swizzle with its first and third components swapped
+// where it picks them (see Texture::swap_red_blue).
+uint32_t SwapRedBlue(uint32_t swizzle) {
+  uint32_t out = 0;
+  for (uint32_t i = 0; i < 4; i++) {
+    uint32_t select = (swizzle >> (3 * i)) & 7;
+    select = select == 0 ? 2 : select == 2 ? 0 : select;
+    out |= select << (3 * i);
+  }
+  return out;
+}
+
+// Whether two registrations are the same stand-in and full-size texture
+// (a pack loaded again registers its stand-ins again).
+bool SameSidecar(const std::shared_ptr<const sidecar::Entry>& a,
+                 const std::shared_ptr<const sidecar::Entry>& b) {
+  if (!a || !b) {
+    return a == b;
+  }
+  return a->page == b->page && a->data_hash == b->data_hash && a->file == b->file &&
+         a->offset == b->offset;
+}
+
+}  // namespace
 
 TextureCache::TextureCache() : state_(std::make_unique<State>()) {}
 TextureCache::~TextureCache() = default;
@@ -1029,6 +1152,42 @@ void TextureCache::BeginFrame(uint32_t frame_index) {
     races_seen_ = races;
     s.RetireLoaded();
     generation_++;  // answers and last texture sets hold their views
+  }
+  // A pack's stand-ins registered, or --sidecar_textures changed: answers
+  // kept may be for a texture that is now drawn from its sidecar or no
+  // longer is. A change of the flag reloads every texture.
+  if (uint64_t g = sidecar::Generation(); g != s.sidecar_generation) {
+    bool enabled = sidecar::Enabled();
+    if (enabled != sidecar_enabled_) {
+      sidecar_enabled_ = enabled;
+      s.RetireLoaded();
+    }
+    s.sidecar_generation = g;
+    generation_++;
+    sampler_generation_++;
+  }
+  // Stand-ins registered since: a texture already made from guest memory
+  // at one of their addresses (made before the registration reached here)
+  // is made again, so it can be drawn from the sidecar.
+  std::vector<uint32_t> registered = sidecar::TakeRegistered();
+  if (!registered.empty()) {
+    ITC_LOG_INFO("sidecar: the texture cache sees {} stand-ins registered (--sidecar_textures {})",
+                 registered.size(), sidecar::Enabled() ? "on" : "off");
+  }
+  for (uint32_t page : registered) {
+    std::vector<State::Texture*> found;
+    for (auto& [key, t] : s.textures) {
+      if (t.layout.base_address >> 12 == page && !t.sidecar) {
+        found.push_back(&t);
+      }
+    }
+    for (State::Texture* t : found) {
+      ITC_LOG_INFO("sidecar: the texture at {:08X} ({}x{}) was made before its stand-in was "
+                   "registered; made again",
+                   page << 12, t->layout.width, t->layout.height);
+      s.Forget(*t);
+      generation_++;
+    }
   }
   uint64_t marked = s.stats.marked;
   s.MarkWritten();
@@ -1383,6 +1542,19 @@ VkImageView TextureCache::LookUpView(uint8_t* base, const uint32_t fetch_words[6
   }
   TextureKey key = KeyOf(fetch_words);
   auto it = s.textures.find(key);
+  // Its memory written: the stand-in may be there now, or gone. Made again
+  // when that changes which it's drawn from; a sidecar's texture still
+  // there needs no reload.
+  if (it != s.textures.end() && it->second.changed) {
+    auto entry = sidecar::Match(base, fetch_words);
+    if (!SameSidecar(entry, it->second.sidecar)) {
+      s.Forget(it->second);
+      generation_++;
+      it = s.textures.end();
+    } else if (entry) {
+      it->second.changed = false;
+    }
+  }
   if (it == s.textures.end()) {
     State::Texture t;
     if (!GetLayout(fetch, t.layout) || !GetFormat(fetch.format, t.format)) {
@@ -1393,6 +1565,26 @@ VkImageView TextureCache::LookUpView(uint8_t* base, const uint32_t fetch_words[6
       return VK_NULL_HANDLE;
     }
     t.endian = fetch.endianness;
+    if (auto entry = sidecar::Match(base, fetch_words)) {
+      auto image = sidecar::Load(*entry);
+      VkDeviceSize needed = 0;
+      for (size_t size : image ? image->level_sizes : std::vector<size_t>{}) {
+        needed += Align(uint32_t(size), 16);
+      }
+      if (needed > kStagingSize) {
+        // Never fits in one frame's uploads: the stand-in instead.
+        ITC_LOG_WARN("sidecar: {} ({:.1f} MB) is larger than the staging buffer ({} MB); the "
+                     "stand-in is drawn",
+                     entry->name, needed / 1048576.0, kStagingSize >> 20);
+        image = nullptr;
+      }
+      if (image) {
+        t.sidecar = std::move(entry);
+        t.sidecar_image = std::move(image);
+        t.swap_red_blue = fetch.format == xenos::TextureFormat::k_8_8_8_8 ||
+                          fetch.format == xenos::TextureFormat::k_8_8_8_8_AS_16_16_16_16;
+      }
+    }
     if (!s.CreateTexture(t)) {
       return VK_NULL_HANDLE;
     }
@@ -1482,7 +1674,8 @@ VkImageView TextureCache::LookUpView(uint8_t* base, const uint32_t fetch_words[6
 
   cacheable = !t.changed;  // else staging was full: try again next call
   t.last_drawn_s = s.now_s;
-  return s.GetSwizzledView(t, fetch.swizzle, natural);
+  return s.GetSwizzledView(t, t.swap_red_blue ? SwapRedBlue(fetch.swizzle) : fetch.swizzle,
+                           natural);
 }
 
 VkImageView TextureCache::State::GetSwizzledView(Texture& t, uint32_t swizzle,
@@ -1722,6 +1915,15 @@ VkSampler TextureCache::LookUpSampler(const uint32_t fetch_words[6],
   if (GetLayout(fetch, layout)) {
     min_level = layout.min_level;
     max_level = layout.max_level;
+  }
+  // A sidecar's texture: its own levels (the stand-in may have none, and
+  // the full-size texture is minified more).
+  if (auto entry = sidecar::Match(nullptr, fetch_words); entry && entry->levels > 1) {
+    min_level = 0;
+    max_level = entry->levels - 1;
+    if (mip == uint32_t(xenos::TextureFilter::kBaseMap)) {
+      mip = 1;  // linear between levels
+    }
   }
   if (mip == uint32_t(xenos::TextureFilter::kBaseMap) || base_level_only_) {
     max_level = min_level;

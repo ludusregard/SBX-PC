@@ -111,6 +111,14 @@ In and tested (2026-11-09): `native_menu_sounds`,
   Example: `00000072.bin` and `00000072.dat` are both id `00000072` and would both be valid. 
   (`src/hooks/patch_loader.cpp`, `--patch_loader`, on by default; see
   `docs/game_data.md`, "Patch data"). Not yet tested.
+- Sidecar textures: a pack served by the patch loader (or a language
+  folder) can have full-size textures (BC7, 16-bit, upscales) in
+  `<same name>.sbpr` beside it, made by sbxr_tools; the game loads the
+  small stand-ins in the pack, and the native renderer draws the full-size
+  textures in their place (`src/hooks/sidecar.cpp`,
+  `src/renderer/sidecar_textures.cpp`, `--sidecar_textures`, on by
+  default; `docs/game_data.md`, "Sidecar textures (SBPR)"). Not yet tested
+  in game.
 - Custom music: tracks from `assets/ADDON_DATA/CUSTOM_MUSIC/<CATEGORY>/`
   (ogg, opus, flac, mp3, wav) play in the place of the game's music by a
   roll at each music start (`--new_music_roll`, 0 by default, or a folder's

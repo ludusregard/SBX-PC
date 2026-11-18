@@ -189,7 +189,8 @@ decompressed size 0, which makes it a loose file stored as is; then
 (`PATCH_DATA\BUILD\TXR\BUILD\00000072.bin`, under `game:\`). The `.TOC`
 and `.DAT` files aren't changed. Only existing ids can be replaced
 (adding ids needs the counts above patched). The log names each override
-at boot and each time one is loaded.
+at boot and each time one is loaded. A file may have full-size textures
+in a sidecar beside it ("Sidecar textures (SBPR)" below).
 
 `assets/PATCH_DATA/BUILD/TXR/BUILD/` is a git submodule (`SBXR_MOD`): the
 `gut_archive_files` branch of Shutoko Battle X Restored, which holds that
@@ -874,6 +875,73 @@ material record (0x200 bytes) names its textures (`Model::RecordShape`,
 +0x98  8 x s32: for each, the index of the XPR2 in the model's list
 +0xB8  8 x s32: for each, the texture's index in that XPR2 (-1 = none)
 ```
+
+### Sidecar textures (SBPR)
+
+A pack served from `PATCH_DATA` or a language folder can carry full-size
+versions of its textures beside it, in `<same name>.sbpr`
+(`00022695.sbpr` next to `00022695.xpr`; any file holding XPR2s works, a
+screen or a font as well). sbxr_tools writes both (`sbxr xpr-pack`, the
+explorer's "sidecar" switch). The game never sees the sidecar: the pack
+holds a **stand-in** for each such texture, a texture of the size and
+format the game expects (a smaller copy, or its header alone over one
+blank 4 KiB page). Its code, UV rectangles, memory and the shared load
+buffer see only the stand-ins.
+
+The sidecar, little-endian:
+
+```
++0  "SBPR"  u32 version (1)  u32 entries  u32 header size (to the first DDS)
++16 entries, 64 bytes each:
+      u32 the XPR2's offset in the file it's beside (0 for an .xpr; a
+          screen's pack is at its header's +20, a font's at 0x40013)
+      u32 the texture's record number in that XPR2
+      char[32] its name (NUL-padded)
+      u32 width, height (the full-size texture's)
+      u32 width, height (its stand-in's)
+      u32 offset of its DDS in this file, u32 its size
+then the DDS files, 16-byte aligned
+```
+
+DDS formats read: DXT1, DXT3, DXT5 (FourCC or DX10), BC7, R8G8B8A8,
+B8G8R8A8, R16G16B16A16 (UNORM and float), with their mip levels.
+
+How it's used (`src/hooks/sidecar.cpp`, `src/renderer/sidecar_textures.cpp`,
+the texture cache in `src/renderer/vulkan/textures.cpp`):
+
+1. At `Archive::Init` the patch loader hands over the files it serves.
+   For each with a sidecar, every XPR2 the sidecar names is read from the
+   file and its header bytes (the 12-byte head and the header block) are
+   hashed. A sidecar isn't an archive file itself (the scan skips
+   `.sbpr`).
+2. `XPR::Create`'s wrapper hashes the same bytes of the XPR2 it's given.
+   For a known pack, after the original has relocated it, each listed
+   texture's record is checked by name, and its fetch constant (texture
+   header +0x1C) gives the stand-in's address, format and size. These are
+   registered with the renderer with a hash of the stand-in's first 4 KiB
+   of data.
+   The header's address is the data's virtual address (0xFC8E8000 for
+   22591's first logo); the GPU reads 0xE0000000-view addresses as physical
+   + 4 KiB (0x1C8E9000), so that is the page registered (seen 2026-11-17:
+   registering the page as written found nothing).
+3. The texture cache, making a texture whose fetch constant has a
+   registered address, format and size, and whose memory still hashes as
+   registered, reads the DDS from the sidecar (kept while a
+   texture uses it; a texture made before the registration reached the
+   cache is made again) and makes the image from it at its own size, format and
+   levels; the sampler uses its levels. Memory written there later (the
+   pack freed, something else loaded) makes the texture again from guest
+   memory. An A8R8G8B8 stand-in's fetch constant swizzles B, G, R: the
+   full-size texture gets the swizzle with its first and third swapped.
+4. `--sidecar_textures=false` (F4) draws the stand-ins instead. The log
+   names each pack indexed, each stand-in registered and each DDS read.
+
+Shaders sample in normalized coordinates, so a larger texture lines up.
+Code that works in texels from the texture's size reads the stand-in's
+(the font's glyph mapping does: an HD sheet as a sidecar keeps the
+original's size in the pack). A DDS larger than the staging buffer (64
+MB) isn't drawn. Only XPR2 textures: the decal TGAs don't go through
+`XPR::Create`. Only the native renderer.
 
 ### Car decals (TGA) and the vinyl sheet (confirmed)
 

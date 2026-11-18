@@ -140,6 +140,7 @@ set(SBX_SOURCES
     src/hooks/patch_loader.cpp
     src/hooks/post_effects.cpp
     src/hooks/post_race.cpp
+    src/hooks/sidecar.cpp
     src/game/post_effect_objects.cpp
     src/game/race_event.cpp
     src/game/race_hud.cpp
@@ -209,6 +210,7 @@ list(APPEND SBX_SOURCES
     src/renderer/gpu_memory.cpp
     src/renderer/pipeline_list.cpp
     src/renderer/replay_hooks.cpp
+    src/renderer/sidecar_textures.cpp
     src/renderer/state.cpp
     src/renderer/vulkan/overlay.cpp
     src/renderer/vulkan/passes.cpp
