@@ -68,6 +68,15 @@ bool CarTransforms_HoldsFrameCamera(uint8_t* base, uint32_t address);
 void CarTransforms_MenuStageBegin();
 void CarTransforms_MenuStageEnd();
 
+// Around a menu 3D scene's drawing, blended or not (the garage stage's step,
+// the parking area's scene; per_frame_logic.cpp): the camera passes it
+// updates are noted, for the native renderer's own passes (--xegtao).
+void CarTransforms_MenuSceneBegin();
+void CarTransforms_MenuSceneEnd();
+// The camera pass a menu 3D scene updated on this main loop pass (pass 0's
+// if it was one of them, else the first), or 0 if none did.
+uint32_t CarTransforms_MenuSceneCamera();
+
 // For the CameraPass::Update wrapper: r3 = the camera pass.
 bool CarTransforms_CameraEnabled();
 void CarTransforms_CameraBegin(uint8_t* base, uint32_t address);

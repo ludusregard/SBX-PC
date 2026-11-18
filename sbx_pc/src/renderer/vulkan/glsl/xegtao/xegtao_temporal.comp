@@ -1,0 +1,82 @@
+#version 450
+// --xegtao (passes.cpp, ApplyXeGTAO): the denoised AO term blended into a
+// history kept over frames, so the noise, which moves each frame (XeGTAO's
+// NoiseIndex cycles over 64 frames), averages out. Each pixel finds where it
+// was last frame through the G-buffer's camera motion vectors. The history
+// is dropped where its view distance doesn't match (something else was
+// there: a disocclusion, or a car, whose own motion the vectors don't
+// have), and clamped to this frame's 3x3 neighborhood against ghosting.
+//   binding 0: the AO term (r32ui: the visibility times 255)
+//   binding 1: the G-buffer's velocity (UV now minus UV last frame)
+//   binding 2: the G-buffer's depth (.g: the view distance)
+//   binding 3: last frame's history (rg32f: visibility, view distance),
+//     filtered here (linear filtering of 32-bit floats is optional in Vulkan)
+//   binding 4: this frame's history, written
+//   binding 5: where no AO is applied (r8; xegtao_depth.comp): 1 there
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform usampler2D ao_term;
+layout(set = 0, binding = 1) uniform sampler2D velocity;
+layout(set = 0, binding = 2) uniform sampler2D depth;
+layout(set = 0, binding = 3) uniform sampler2D history;
+layout(set = 0, binding = 4, rg32f) uniform writeonly image2D history_out;
+layout(set = 0, binding = 5) uniform sampler2D no_ao;
+
+layout(push_constant) uniform Constants {
+  float current_weight;   // this frame's share (1: no history)
+  float depth_tolerance;  // the relative view distance change still taken as the same point
+  int has_history;        // 0: last frame's history isn't there
+} constants;
+
+// Last frame's history at `uv`, bilinear.
+vec2 History(vec2 uv, ivec2 size) {
+  vec2 texel = uv * vec2(size) - 0.5;
+  ivec2 first = ivec2(floor(texel));
+  vec2 f = texel - vec2(first);
+  ivec2 last = size - 1;
+  vec2 a = texelFetch(history, clamp(first, ivec2(0), last), 0).xy;
+  vec2 b = texelFetch(history, clamp(first + ivec2(1, 0), ivec2(0), last), 0).xy;
+  vec2 c = texelFetch(history, clamp(first + ivec2(0, 1), ivec2(0), last), 0).xy;
+  vec2 d = texelFetch(history, clamp(first + ivec2(1, 1), ivec2(0), last), 0).xy;
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+float Visibility(ivec2 position, ivec2 size) {
+  position = clamp(position, ivec2(0), size - 1);
+  return float(texelFetch(ao_term, position, 0).r) / 255.0;
+}
+
+void main() {
+  ivec2 position = ivec2(gl_GlobalInvocationID.xy);
+  ivec2 size = textureSize(ao_term, 0);
+  if (any(greaterThanEqual(position, size))) {
+    return;
+  }
+  float current = Visibility(position, size);
+  float view_distance = texelFetch(depth, position, 0).g;
+  float result = current;
+  if (constants.has_history != 0 && constants.current_weight < 1.0) {
+    vec2 uv = (vec2(position) + 0.5) / vec2(size);
+    vec2 previous_uv = uv - texelFetch(velocity, position, 0).xy;
+    if (all(greaterThanEqual(previous_uv, vec2(0.0))) &&
+        all(lessThanEqual(previous_uv, vec2(1.0)))) {
+      vec2 previous = History(previous_uv, size);
+      if (abs(previous.y - view_distance) <= max(view_distance, 1e-3) * constants.depth_tolerance) {
+        float low = current, high = current;
+        for (int y = -1; y <= 1; y++) {
+          for (int x = -1; x <= 1; x++) {
+            float v = Visibility(position + ivec2(x, y), size);
+            low = min(low, v);
+            high = max(high, v);
+          }
+        }
+        result = mix(clamp(previous.x, low, high), current, constants.current_weight);
+      }
+    }
+  }
+  if (texelFetch(no_ao, position, 0).r > 0.5) {
+    result = 1.0;
+  }
+  imageStore(history_out, position, vec4(result, view_distance, 0.0, 0.0));
+}

@@ -119,6 +119,17 @@ class Passes {
   // own velocity buffer, 4 the depth as drawn; 0 off).
   void set_gbuffer(bool enabled, uint32_t at, int32_t debug, float depth_range,
                    float velocity_scale);
+  // Intel's XeGTAO ambient occlusion (--xegtao; ApplyXeGTAO in passes.cpp):
+  // right after the G-buffer is built (it's built for this even without
+  // --gbuffer), the AO multiplied into the main view. quality 0-3 (low to
+  // ultra), denoise passes 0-3, radius in the game's units (meters),
+  // strength 0-1 (0 no change). debug (--xegtao_debug): draw one of its
+  // buffers over the frame (1 AO, 2 normals, 3 edges; 0 off). temporal
+  // (--xegtao_temporal): each frame's share of the AO kept over frames (1:
+  // none). On the race's 3D view and the menus' (garage, shops, parking
+  // area), and with mirror (--xegtao_mirror) the race's rear-view mirror.
+  void set_xegtao(bool enabled, int32_t quality, int32_t denoise, float radius, float strength,
+                  int32_t debug, float temporal, bool mirror);
   // For set_skip_pixel_shader: skip the draws without a pixel shader.
   static constexpr uint64_t kSkipNoPixelShader = 1;
   void set_record_draws(bool record);

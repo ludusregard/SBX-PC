@@ -167,6 +167,43 @@ bool g_in_draw_step = false;           // between Race::DrawStep's start and end
 // In the menus, between CarTransforms_MenuStageBegin and End (a garage
 // stage step, per_frame_logic.cpp).
 bool g_in_menu_stage = false;
+// Between CarTransforms_MenuSceneBegin and End (with or without --subtick):
+// the camera passes updated there on main loop pass g_menu_scene_pass, in
+// order. Each new set is logged once, to show which passes the menus use.
+constexpr uint32_t kCameraPasses = 0x826AA8E0;  // 592 bytes a pass
+constexpr uint32_t kCameraPassSize = 592;
+int g_menu_scene_depth = 0;
+uint64_t g_menu_scene_pass = ~0ull;
+std::vector<uint32_t> g_menu_scene_cameras;
+std::set<std::string> g_logged_menu_scene_cameras;
+
+// The CameraPass::Update wrapper, in a menu scene: notes the pass.
+void NoteMenuSceneCamera(uint32_t address) {
+  const uint64_t pass = GameMessages_PassNumber();
+  if (pass != g_menu_scene_pass) {
+    // The last pass's set, logged once.
+    if (!g_menu_scene_cameras.empty()) {
+      std::string passes;
+      for (uint32_t camera : g_menu_scene_cameras) {
+        const uint32_t offset = camera - kCameraPasses;
+        passes += camera >= kCameraPasses && offset % kCameraPassSize == 0 &&
+                          offset / kCameraPassSize < 21
+                      ? fmt::format(" {}", offset / kCameraPassSize)
+                      : fmt::format(" {:08X}", camera);
+      }
+      if (g_logged_menu_scene_cameras.size() < 16 &&
+          g_logged_menu_scene_cameras.insert(passes).second) {
+        REXLOG_INFO("menu scene camera passes:{}", passes);
+      }
+    }
+    g_menu_scene_pass = pass;
+    g_menu_scene_cameras.clear();
+  }
+  if (std::find(g_menu_scene_cameras.begin(), g_menu_scene_cameras.end(), address) ==
+      g_menu_scene_cameras.end()) {
+    g_menu_scene_cameras.push_back(address);
+  }
+}
 
 void ReadFloats(uint8_t* base, uint32_t address, float* out, int n) {
   for (int i = 0; i < n; i++) {
@@ -544,6 +581,26 @@ void CarTransforms_MenuStageBegin() {
   g_in_menu_stage = true;
 }
 
+void CarTransforms_MenuSceneBegin() {
+  g_menu_scene_depth++;
+}
+
+void CarTransforms_MenuSceneEnd() {
+  g_menu_scene_depth = std::max(g_menu_scene_depth - 1, 0);
+}
+
+uint32_t CarTransforms_MenuSceneCamera() {
+  if (g_menu_scene_cameras.empty() || g_menu_scene_pass != GameMessages_PassNumber()) {
+    return 0;
+  }
+  for (uint32_t address : g_menu_scene_cameras) {
+    if (address == kCameraPasses) {
+      return address;
+    }
+  }
+  return g_menu_scene_cameras.front();
+}
+
 void CarTransforms_MenuStageEnd() {
   g_in_menu_stage = false;
 }
@@ -573,6 +630,9 @@ extern "C" REX_FUNC(sub_820A3B98) {
   }
   __imp__sub_820A3B98(ctx, base);
   subtick::CarTransforms_CameraFov(base, pass);  // --camera_fov, after the game's update (any mode)
+  if (subtick::g_menu_scene_depth > 0) {
+    subtick::NoteMenuSceneCamera(pass);
+  }
 }
 
 // Recorder::RecordObject (sub_8257ACD0): r4 = the view-projection the object is

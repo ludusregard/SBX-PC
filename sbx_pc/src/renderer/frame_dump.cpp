@@ -207,6 +207,7 @@ uint32_t Write(const std::filesystem::path& directory, const Frame& frame,
         "[{}, {}, {}, {}], \"alpha_ref\": {}}},\n"
         "      \"bool_constants\": {}, \"loop_constants\": {},\n"
         "      \"vertex_fetches\": {},\n"
+        "      \"unread_vertex_fetches\": {},\n"
         "      \"textures\": {}}}{}\n",
         n, d.main_view, d.pitch, d.msaa, d.edram_base, d.surface_format, d.has_color,
         d.has_depth, d.primitive_type, d.count, d.inline_vertices, ShaderJson(d.vertex),
@@ -220,6 +221,13 @@ uint32_t Write(const std::filesystem::path& directory, const Frame& frame,
                                    d.bool_loop_constants.end()),
              [](uint32_t w) { return Hex32(w); }),
         List(d.vertex_fetches,
+             [](const std::array<uint32_t, 3>& v) {
+               return std::format("{{\"fetch_constant\": {}, \"address\": {}, \"bytes\": {}, "
+                                  "\"words\": [{}, {}]}}",
+                                  v[0], Hex32(v[1] & 0x1FFFFFFCu), ((v[2] >> 2) & 0xFFFFFFu) * 4,
+                                  Hex32(v[1]), Hex32(v[2]));
+             }),
+        List(d.unread_vertex_fetches,
              [](const std::array<uint32_t, 3>& v) {
                return std::format("{{\"fetch_constant\": {}, \"address\": {}, \"bytes\": {}, "
                                   "\"words\": [{}, {}]}}",

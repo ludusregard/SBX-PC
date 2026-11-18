@@ -44,6 +44,13 @@ const uint kXeFlagPrimitivePolygonal = 1u << 11;
 const uint kXeFlagPrimitiveLine = 1u << 12;
 const uint kXeFlagAlphaTestShift = 16u;  // 3 bits: the compare function
 const uint kXeFlagConvertColor0ToGamma = 1u << 19;
+// SBX's own (bit 31, past the translator's): the alpha test is a dither
+// instead, passing where the alpha is over a per-pixel threshold that the
+// reference moves each frame (passes.cpp, the smooth-alpha solids' copies).
+const uint kXeFlagSbxDitheredAlpha = 1u << 31;
+// SBX's own (bit 30): the draw takes no AO (passes.cpp: the mirrors, the
+// sky); in the normals target its view distance is the sign bit alone.
+const uint kXeFlagSbxNoAo = 1u << 30;
 
 // The float constants the shader reads, packed in register order (all 256
 // when it addresses them relative to the loop index).
@@ -465,6 +472,12 @@ vec4 xe_param_gen() {
 
 // The alpha test, on the first color target's alpha.
 bool xe_alpha_test_passes(float alpha) {
+  if ((xe_sys.flags & kXeFlagSbxDitheredAlpha) != 0u) {
+    // Interleaved gradient noise (Jimenez), shifted each frame.
+    vec2 p = floor(gl_FragCoord.xy) + 5.588238 * xe_sys.alpha_test_reference;
+    float threshold = fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+    return alpha > threshold;
+  }
   uint function = (xe_sys.flags >> kXeFlagAlphaTestShift) & 7u;
   float reference = xe_sys.alpha_test_reference;
   if (function == 7u) return true;
@@ -476,10 +489,51 @@ bool xe_alpha_test_passes(float alpha) {
 // A color as the shader wrote it, to what the render target takes: the
 // target's exponent bias, and gamma if the target is gamma but its format
 // isn't.
+//
+// SBX's light target (--xegtao; passes.cpp, "View targets"): render target
+// 0's color goes to location 2 as well, blended the same way, when the
+// renderer says the draw only adds light (XE_LIGHT: the models' unlit
+// material, additive blends); otherwise the part of the color a shader put
+// in xe_light_extra (light it added, such as course_projected's projector,
+// the neon underglow and headlights), with the same alpha, so the blend
+// fades what's under it as it fades the color. The AO then darkens the
+// color but not that light. Dropped where the pipeline has no light target.
+layout(constant_id = 900) const bool XE_LIGHT = false;
+layout(location = 2) out vec4 xe_out_light;
+// SBX's normals target (location 1; glsl/materials/normals_out.glsl): no
+// normal, and the fragment's view distance, unless the material writes its
+// normal after this (write_normal). Dropped where the pipeline has no
+// normals target or doesn't write it.
+layout(location = 1) out uvec2 xe_out_normal;
+// The view distance as the normals target holds it: its float bits, or,
+// for a draw that takes no AO (kXeFlagSbxNoAo), the sign bit alone (no
+// distance: the AO's depth there is the game's; xegtao_depth.comp).
+uint xe_normal_distance() {
+  return (xe_sys.flags & kXeFlagSbxNoAo) != 0u ? 0x80000000u
+                                               : floatBitsToUint(1.0 / gl_FragCoord.w);
+}
+vec3 xe_light_extra = vec3(0.0);
+vec3 xe_color_output_rgb(vec3 rgb, int target) {
+  rgb *= xe_sys.color_exp_bias[target];
+  if ((xe_sys.flags & (kXeFlagConvertColor0ToGamma << uint(target))) != 0u) {
+    rgb = xe_linear_to_gamma(rgb);
+  }
+  return rgb;
+}
 vec4 xe_color_output(vec4 color, int target) {
   precise vec4 c = color * xe_sys.color_exp_bias[target];
   if ((xe_sys.flags & (kXeFlagConvertColor0ToGamma << uint(target))) != 0u) {
     c.rgb = xe_linear_to_gamma(c.rgb);
+  }
+  if (target == 0) {
+    xe_out_normal = uvec2(0u, xe_normal_distance());
+    if (XE_LIGHT) {
+      xe_out_light = c;
+    } else {
+      // The light's share of the output, so gamma stays exact.
+      vec3 rest = xe_color_output_rgb(max(color.rgb - xe_light_extra, 0.0), target);
+      xe_out_light = vec4(max(c.rgb - rest, 0.0), c.a);
+    }
   }
   return c;
 }

@@ -1,0 +1,93 @@
+#version 450
+#extension GL_EXT_samplerless_texture_functions : require
+// --xegtao with --native_shaders (passes.cpp, MergeNormals): the smooth
+// normals the materials wrote into the normals target
+// (glsl/materials/normals_out.glsl: world space, packed 11_11_10, with the
+// writing fragment's view distance) over XeGTAO's normals from depth, in its
+// view space and packing (11_11_10 of normal * 0.5 + 0.5, as
+// CSGenerateNormals writes them). Taken only where the written distance is
+// the depth's (within kTolerance of it): where a later draw wrote depth but
+// no normal (glass, an unlit solid, a translated shader), the normal left
+// there from behind it isn't its own, and the normal from depth stays; as it
+// does where none was written. Sample 0 of a multisampled target
+// (MULTISAMPLE), as the G-buffer takes its depth.
+//   binding 0: the normals target (r32g32ui)
+//   binding 1: XeGTAO's normals (r32ui), read and written
+//   binding 2: XeGTAO's view-space depth, MIP 0 (r32f)
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+#ifdef MULTISAMPLE
+layout(set = 0, binding = 0) uniform utexture2DMS material_normals;
+#else
+layout(set = 0, binding = 0) uniform utexture2D material_normals;
+#endif
+layout(set = 0, binding = 1, r32ui) uniform uimage2D normals;
+layout(set = 0, binding = 2, r32f) uniform readonly image2D depth;
+
+layout(push_constant) uniform Constants {
+  vec4 rows[3];       // world space to XeGTAO's view space, row by row
+  vec2 tan_half_fov;  // XeGTAO's CameraTanHalfFOV
+  vec2 pixel_size;    // 1 / the view's size
+} constants;
+
+// How far (relative) the written distance may be from the depth's: the
+// fragment's 1 / w against the depth unpacked through the projection, plus
+// the depth's slope over a pixel (below).
+const float kTolerance = 0.002;
+
+uint Pack(vec3 unit) {
+  unit = clamp(unit, 0.0, 1.0);
+  return uint(unit.x * 2047.0 + 0.5) | (uint(unit.y * 2047.0 + 0.5) << 11) |
+         (uint(unit.z * 1023.0 + 0.5) << 22);
+}
+
+vec3 Unpack(uint packed) {
+  return vec3(float(packed & 0x7FFu) / 2047.0, float((packed >> 11) & 0x7FFu) / 2047.0,
+              float(packed >> 22) / 1023.0);
+}
+
+void main() {
+  ivec2 position = ivec2(gl_GlobalInvocationID.xy);
+  if (any(greaterThanEqual(position, imageSize(normals)))) {
+    return;
+  }
+  uvec2 written = texelFetch(material_normals, position, 0).xy;
+  if (written.x == 0u) {
+    return;
+  }
+  float distance = uintBitsToFloat(written.y & 0x7FFFFFFFu);  // the sign: no AO
+  float view_depth = imageLoad(depth, position).r;
+  // Plus the depth's change to the next pixels: the fragment's distance is
+  // at the pixel's center, the depth at sample 0, which can be most of a
+  // pixel away on a surface seen at a grazing angle.
+  ivec2 last = imageSize(normals) - 1;
+  float slope = 0.0;
+  slope = max(slope, abs(imageLoad(depth, min(position + ivec2(1, 0), last)).r - view_depth));
+  slope = max(slope, abs(imageLoad(depth, max(position - ivec2(1, 0), ivec2(0))).r - view_depth));
+  slope = max(slope, abs(imageLoad(depth, min(position + ivec2(0, 1), last)).r - view_depth));
+  slope = max(slope, abs(imageLoad(depth, max(position - ivec2(0, 1), ivec2(0))).r - view_depth));
+  // A neighbor across an edge isn't this surface's slope: at most a share
+  // of the distance.
+  slope = min(slope, 0.02 * view_depth);
+  if (!(abs(distance - view_depth) <= kTolerance * max(view_depth, 1e-3) + slope)) {
+    return;
+  }
+  vec3 world = Unpack(written.x) * 2.0 - 1.0;
+  vec3 normal = vec3(dot(constants.rows[0].xyz, world), dot(constants.rows[1].xyz, world),
+                     dot(constants.rows[2].xyz, world));
+  float length_squared = dot(normal, normal);
+  if (length_squared < 1e-8) {
+    return;
+  }
+  normal *= inversesqrt(length_squared);
+  // Turned toward the eye (two-sided and mirrored parts): the ray through
+  // the pixel, in XeGTAO's view space (its NDCToViewMul and NDCToViewAdd).
+  vec2 uv = (vec2(position) + 0.5) * constants.pixel_size;
+  vec3 ray = vec3((uv.x * 2.0 - 1.0) * constants.tan_half_fov.x,
+                  (1.0 - uv.y * 2.0) * constants.tan_half_fov.y, 1.0);
+  if (dot(normal, ray) > 0.0) {
+    normal = -normal;
+  }
+  imageStore(normals, position, uvec4(Pack(normal * 0.5 + 0.5)));
+}

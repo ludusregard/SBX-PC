@@ -29,4 +29,5 @@ compile gbuffer_frag gbuffer.frag
 compile gbuffer_ms_frag gbuffer.frag -DMULTISAMPLE
 compile gbuffer_debug_frag gbuffer_debug.frag
 # CMAA2 (HLSL, through glslangValidator): python3 compile_cmaa2.py
+# XeGTAO (HLSL and GLSL, through glslangValidator): python3 compile_xegtao.py
 # The game's shaders (game/, tools/shader_port): python3 compile_game.py

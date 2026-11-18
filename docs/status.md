@@ -89,6 +89,221 @@ In and tested (2026-11-09): `native_menu_sounds`,
     `--gbuffer_debug` 1-4 draws one over the frame (distance, motion, the
     game's own velocity buffer, raw depth). Nothing else uses the buffers yet
     (`BuildGBuffer` in `src/renderer/vulkan/passes.cpp`, `glsl/gbuffer*.frag`).
+  - XeGTAO (2026-11-17): `--xegtao` (off by default) runs Intel's XeGTAO
+    ambient occlusion on the 3D view in races, right after the G-buffer is
+    built (it's built for it even without `--gbuffer`): the depth's MIPs,
+    normals from the depth, the AO term and its denoise, then the AO
+    multiplied into every sample of the main view, before the
+    anti-aliasing and the post-processing. Its depth is unpacked with camera
+    pass 0's projection (+0x50), now handed over with the view-projection.
+    `--xegtao_quality` (0-3, 2), `--xegtao_denoise` (0-3, 2),
+    `--xegtao_radius` (meters, 0.75 since 2026-11-17), `--xegtao_strength` (0-1, 1);
+    `--xegtao_debug` 1-3 draws the AO, the normals or the edges over the
+    frame (`ApplyXeGTAO` in `src/renderer/vulkan/passes.cpp`,
+    `glsl/xegtao/`, `glsl/compile_xegtao.py`). John's test (2026-11-17):
+    every setting works; the denoise left a fixed, screen-locked pattern of
+    larger blotches; glass, underglow and smoke were darkened and glass hid
+    what's behind it from the AO; no AO in the garage or the PA (no camera
+    there yet); car normals look faceted (they come from depth, so they're
+    the polygons'). Since then, not tested yet:
+    - The AO is kept over frames (`--xegtao_temporal`, 0.1: each frame's
+      share), reprojected with the G-buffer's camera motion, dropped where
+      the view distance changed by over 15% and clamped to the 3x3
+      neighborhood; XeGTAO's noise now moves each frame so it averages out
+      (`glsl/xegtao/xegtao_temporal.comp`).
+    - No reordering any more (the earlier tries are in the comments of
+      `passes.cpp`, `XeGtao`): the AO runs after the whole 3D scene, at the
+      race view's resolve `gbuffer_resolve` or the menu view's first tiled
+      resolve. Instead, with `--native_shaders`, every hand-written shader
+      writes its color to a light target of ours as well (`xe_color_output`
+      in `glsl/game/xe_interface.glsl`, location 2, RGBA16F, blended as the
+      color): the color itself for draws that only add light (the models'
+      unlit material, `unlit.frag`: glow planes, emissive bitmaps; additive blends: flares, underglow; spec constant `XE_LIGHT`,
+      900), else black with the color's alpha. The AO is applied as color x
+      ao + light x (1 - ao), so that light isn't darkened
+      (`--xegtao_light`, on).
+    - `--xegtao_alpha_depth` (on): the models' lit blended draws without
+      depth writes (smooth-alpha solids: the type B models' DXT5 wheels) get
+      a depth-only copy, with their normals, where alpha >= 0.5; not course
+      draws (the PA's decal strip), not depth-biased or equal-tested ones.
+      Families from spec constant `SBX_FAMILY` (901) in the materials.
+    - All 135 game shaders recompiled (`generated_game_shaders.h`) for the
+      light output.
+    - The garage, shops and parking area: their camera is the camera pass
+      their 3D scene updates (the garage stage's step, the parking area's
+      scene; `CarTransforms_MenuSceneCamera`, pass 0's if it's one of them;
+      the passes used are logged as `menu scene camera passes:`). The menu
+      view (pitch 1280, 4x MSAA, drawn in tiles) has its own G-buffer and
+      AO, run before its first blended draw or at its first tiled resolve.
+    - Smooth normals (`--xegtao_normals`, on): with `--native_shaders`, the
+      hand-written materials with a normal (57 shaders: `lit.frag`,
+      `course_projected.frag`, `course.frag` with `NORMAL_REG`) write their
+      interpolated world-space normal to location 1
+      (`glsl/materials/normals_out.glsl`). The 3D views get a second color
+      attachment of ours for it (A2B10G10R10, the view's samples, cleared
+      each frame); only opaque, depth-writing draws of those shaders write
+      it. XeGTAO takes it over its normals from depth where written
+      (`glsl/xegtao/xegtao_normals.comp`, through the camera's view matrix).
+      The pipeline key gained the attachment (`pipeline_list.bin` starts
+      over once).
+    - John's test (2026-11-17): the neon underglow (texture file 143,
+      `neon_*`) was still darkened; the dark meshes behind the front bumper
+      were in neither the normals nor the AO's depth; the PA's parking-line
+      strip still made AO. Since then, not tested yet:
+      - The underglow is `course_projected.frag`'s projector 1 (`prjtx1`,
+        added to the road's color, faded over 3 units of height), so it was
+        course color. A shader can now mark light it adds
+        (`xe_light_extra` in `xe_interface.glsl`); `xe_color_output` writes
+        that share of the output to the light target. The projector's light
+        is marked (so the headlights' too).
+      - `--xegtao_alpha_depth` covers the models' unlit material as well
+        (the grille meshes), not additive blends (glow planes, flares).
+        `unlit.frag` writes "use the depth's normal" (alpha 0) to the normals
+        target, so an unlit solid no longer leaves the normal of what's
+        behind it there.
+      - `--xegtao_plane_bias` (meters, 0.05; 0 off): a sample no higher than
+        that over the center's tangent plane, by its normal (the smooth one),
+        doesn't occlude, fading in up to twice that; so a decal's few
+        centimeters make no AO. A patch `compile_xegtao.py` applies to
+        `XeGTAO.hlsli` as it compiles it (the file stays Intel's), with the
+        bias in `GTAOConstants.Padding0`.
+    - John's test (2026-11-17): the plane bias works. With
+      `--xegtao_normals` off, the grille meshes and the wheels' alpha
+      cutouts were right in the AO (the glass solid): they write depth, but
+      not our normals, so the normals target kept the normal of what's
+      behind them. Since then, not tested yet: the normals target is
+      R32G32_UINT, the packed normal and the writing fragment's view
+      distance (`normals_out.glsl`); every depth-writing draw of a shader
+      with a normal writes it, blended or not; the merge
+      (`xegtao_normals.comp`) takes a normal only where that distance is the
+      depth's (0.2% plus the depth's slope over a pixel), else the normal
+      from depth. The glass stays solid in the AO, as it is in the depth.
+    - John's test (2026-11-17): almost right; the glass still in the AO
+      (the cockpit view's AO is the windshield's), and the wheels' cutout a
+      hard 1-bit edge. Since then, not tested yet:
+      - The AO has its own depth (`glsl/xegtao/xegtao_depth.comp`): the
+        normals target's view distances, which every hand-written shader
+        writes in its depth-writing (and opaque equal-tested) draws
+        (`xe_out_normal` in `xe_interface.glsl`), over the G-buffer's depth
+        where nothing wrote one. The glass doesn't write it: the shaders
+        with a third texture coordinate (`UV2_REG`, which only the windows
+        and light covers have, stream type 0x10) are `SBX_FAMILY` 4. So the
+        AO looks through the glass and is applied to it. A surface drawn by
+        a translated shader or without a pixel shader isn't in the AO's
+        depth now.
+      - `--xegtao_alpha_depth` (on): the models' lit, blended, not additive
+        draws (the wheels) write the normals target only in a copy drawn
+        first, color and depth off, whose alpha test is a dither moved each
+        frame (bit 31 of the system flags, `kXeFlagSbxDitheredAlpha`); the
+        history averages it into a smooth edge. The copy no longer writes
+        the game's depth, and the draw itself is as the game made it.
+    - John's test (2026-11-17): the glass and wheels work (dithered, fine
+      in the final image), but in the cockpit view an "untextured cover
+      glow" plane over the windshield (additive, "how solid" alpha) was
+      solid in the AO. Since then, not tested yet:
+      - Additive draws never write the normals target (they're light).
+      - `--xegtao_mirror` (off): the rear-view mirror in races gets its own
+        G-buffer and AO. Its target is pitch 520, the guest's 4x MSAA,
+        8_8_8_8, resolved at 512x128 (from the target and resolve log
+        lines); the AO runs at that resolve. Its camera: the first camera
+        pass after 0 with a perspective projection of aspect 4
+        (`CaptureListCamera` in `subtick/renderer_hooks.cpp`; the passes
+        with a perspective projection are logged as `race camera passes
+        with a perspective projection:`, the chosen one marked `<- mirror`).
+        Not yet confirmed which pass that is.
+      - The flags `xegtao_normals`, `xegtao_light`, `xegtao_alpha_depth`
+        and `xegtao_plane_bias` are gone (always on; the bias 0.05 m).
+        `--xegtao_temporal` now defaults to 0.05, `--xegtao_radius` to 0.75.
+    - John's test (2026-11-17): the mirror did nothing and the cockpit's
+      cover glow was still solid. The log showed the mirror pick was wrong:
+      passes 1 and 2 have a perspective of aspect 3.56 (16:9) and pass 3
+      the mirror's 4.00; the range (3.5-4.5) took pass 1. Now within 0.05
+      of 4. The mirror's G-buffer was made but never built (the reason
+      wasn't logged; the view-projection inverse and the descriptor set
+      failures now are). The cover glow isn't additive: the models' unlit
+      blended draws now take the dithered copy as the lit ones do, so it's
+      in the AO's depth only as often as its alpha.
+    - John's test (2026-11-17): the mirror works; the cockpit's solid
+      windshield plane is still there. A frame dump of the cockpit view
+      (2026-11-18; its draw-ID image) shows the windshield is draw 2599/2600:
+      `ps_4F4860F071E25904` (`textured_color.frag`, BUILD 22811, the shared
+      pair 1005's, which no part file uses), alpha-blended, depth-writing,
+      over a lit layer with the same texture (2598, `ps_BDEC67D7B4DF91A1`,
+      black, alpha 0.64, dithered as a smooth-alpha solid). It isn't a
+      model shader, so it wrote the AO's depth whole. It's now glass
+      (`SBX_GLASS` in `post/variants.txt`, `SBX_FAMILY` 4). (A rule tried
+      before it, ps_08 when blended, never applied: ps_08's records with
+      +0x004 = 1, such as the Z33 cabin's, are drawn opaque. Removed.)
+    - The parking area (frame dump, 2026-11-18): its scenery is drawn with
+      the course shaders: a depth-only pass first, then `92355BEBF0E0C743`
+      (`course.frag` without a normal, 6 draws including the largest, 17,201
+      vertices), `959EB72BB94E0226` (no normal) and `A38DF64E59CB943C`
+      (`course_projected.frag`, with one). Surfaces drawn without a normal
+      get the normal from depth: faceted on round shapes such as the pipes.
+      The normal-mapped draws read a third stream from the same vertex
+      buffer, so the area's normals look to be there for the others too.
+      In the dump the area's three streams sit back to back: fetch 95
+      (229,488 bytes, 16 a vertex), 94 (172,116, positions, 12 a vertex,
+      14,343 vertices) and 93 (229,488, 16 a vertex: a normal and a second
+      vector, as stream type 0x0D), and only the normal-mapped draws bind 93.
+    - John's test (2026-11-18): the glass is solved. Since then, not tested
+      yet: the mirrors' surfaces (the car's side mirrors, the interior
+      mirror) are glass to the AO: any draw sampling the rear-view mirror's
+      resolved view (recorded at the mirror target's resolve,
+      `mirror_texture`). In the cockpit dump those are two draws of
+      `ps_72DE42674BE25160`. John's test: that made them holes; they should
+      be solid but take no AO. Now they stay in the AO's depth and normals,
+      and their view distance in the normals target carries its sign bit
+      (bit 30 of the system flags, `kXeFlagSbxNoAo`, set by Draw;
+      `xe_normal_distance`); `xegtao_depth.comp` writes a no-AO mask (R8)
+      from it and the history pass sets the visibility to 1 there.
+    - For the parking area's normals: frame dumps now list
+      `unread_vertex_fetches`, fetch constants 88-95 that hold a vertex
+      buffer the draw's vertex shader doesn't read, to check that the
+      course draws without a normal still have the normal stream (93) set.
+    - John's test (2026-11-18): the side mirrors right; the screen's
+      rear-view box and the sky still took AO (the sky: a gray gradient, AO
+      worked out on the cleared depth). Since then, not tested yet: no AO
+      also for opaque draws without the depth test (the sky, 4 draws of
+      `92355BEBF0E0C743` with vertex shader `E332602F43374F92`, first in
+      the 3D view, in races and the parking area) and every draw sampling
+      the mirror's view (the box: `ps_9567C79307ACC6F5`, draw 2601). A
+      no-AO draw now writes only the sign bit as its distance, so the AO's
+      depth there is the game's (the box writes no depth: the world behind
+      it stays in the AO's depth).
+    - The parking-area dump (2026-11-18, `unread_vertex_fetches`): every
+      course draw without a normal still has fetch 93 bound to the area's
+      normal stream (`198190C4`, 229,488 bytes, right after the positions
+      at `197EF070`), the one the normal-mapped draws read. The sky's draws
+      have it too, left over from the area (their own streams are small),
+      so a shader reading it has to check it belongs to the draw.
+      Since then, not tested yet: the two vertex shaders those draws use
+      (`vs_E76C7F598230D74B`, 00001247, and `vs_86F28F82FA50FE98`, 00001249;
+      the latter also draws the race courses' vertex-colored surfaces) pass
+      the mesh's own normal in interpolator 15 (`STREAM_NORMAL_REG`,
+      `vertex/model.vert`): read from fetch 93 as 16_16_16_16_FLOAT, 4 words
+      a vertex, only when that stream starts right after the position
+      stream with as many vertices (else 0). The 9 `course.frag` variants
+      without a normal write it to the normals target (`STREAM_NORMAL_REG`),
+      for the AO only; the shading is unchanged. Those shaders have no
+      `matWorldVS`, so the normal is taken as already in world space (the
+      course's meshes are static); to check in the normals view against
+      the normal-mapped surfaces next to them.
+    - John's test (2026-11-18): no visible change in the parking area; and
+      AO still around the parking markings. From the data (BUILD_CRS 1244,
+      the Yoyogi parking area's model, `mdl_Detail`, 25,461 vertices, 79
+      materials; a part file in a 0x20-byte container): the normal stream
+      is there and read, but most of the materials drawn without a normal
+      are authored flat (every triangle's vertex normals equal its face
+      normal: e.g. 1,577 of 1,581 triangles of the 4,175-index one), so
+      their mesh normals are the same as the ones from depth. Only a few
+      (the 1,891-index one, 22 and 33) are smoothed. Not a bug in the
+      reading; the meshes aren't smoothed. The markings (`mj_kogata_y`,
+      `mj_kurumaisu`, `mj_oogata_y`, `mj_rinsya_y`, materials 55-58) sit 4
+      to 8 cm over the ground, so the plane bias (0.05, full at 0.1) left
+      the higher ones in: now 0.1 (no occlusion to 10 cm, full at 20 cm).
+      The tile walkway (`PA_yoyogi_TileFloor_a`, ~22 cm over what's under
+      it) is real geometry and keeps its AO.
   - Pipeline warm-up (2026-11-16): the pipelines earlier sessions drew with
     are made at start on a worker thread (`cache/pipeline_list.bin`,
     `--native_renderer_warm_pipelines`), against the first-draw stutter; see

@@ -563,14 +563,18 @@ extern "C" REX_FUNC(sub_8217DD48) {
   REX_FUNC_PROLOGUE();
   const uint32_t stage = guest::LoadU32(base, ctx.r3.u32);
   if (!GarageStageBlended() || stage == 0) {
+    subtick::CarTransforms_MenuSceneBegin();
     __imp__sub_8217DD48(ctx, base);
+    subtick::CarTransforms_MenuSceneEnd();
     return;
   }
   if (g_update_depth == 0 && NotingMenuDrawCalls()) {
     NoteMenuDrawCall({MenuDrawCall::kGarageStage, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32});
   }
   subtick::CarTransforms_MenuStageBegin();
+  subtick::CarTransforms_MenuSceneBegin();
   g_garage_stage.Run(base, stage, [&] { __imp__sub_8217DD48(ctx, base); });
+  subtick::CarTransforms_MenuSceneEnd();
   subtick::CarTransforms_MenuStageEnd();
 }
 
@@ -606,14 +610,18 @@ void RedrawParkingArea(PPCContext& ctx, uint8_t* base, uint32_t area) {
 extern "C" REX_FUNC(sub_82225DE0) {
   REX_FUNC_PROLOGUE();
   if (!GarageStageBlended()) {
+    subtick::CarTransforms_MenuSceneBegin();
     __imp__sub_82225DE0(ctx, base);
+    subtick::CarTransforms_MenuSceneEnd();
     return;
   }
   if (g_update_depth == 0 && NotingMenuDrawCalls()) {
     NoteMenuDrawCall({MenuDrawCall::kParkingArea, ctx.r3.u32, 0, 0});
   }
   subtick::CarTransforms_MenuStageBegin();
+  subtick::CarTransforms_MenuSceneBegin();
   __imp__sub_82225DE0(ctx, base);
+  subtick::CarTransforms_MenuSceneEnd();
   subtick::CarTransforms_MenuStageEnd();
 }
 

@@ -159,6 +159,30 @@ ITC_FLAG_STRING(gbuffer_debug_depth_range, "500", "SBX",
                 "With gbuffer_debug 1: the distance shown as black, in the game's units");
 ITC_FLAG_STRING(gbuffer_debug_velocity_scale, "20", "SBX",
                 "With gbuffer_debug 2: how much the motion is magnified");
+ITC_FLAG_BOOL(xegtao, false, "SBX",
+              "Experimental: Intel's XeGTAO ambient occlusion on the 3D view, in races and in "
+              "the garage, shops and parking area, before the anti-aliasing and the "
+              "post-processing. With native_shaders, from the materials' smooth normals and a "
+              "depth of its own: glass and additive light left out, smooth-alpha edges "
+              "dithered, the light that draws add (glows, emissives, projected light) not "
+              "darkened");
+ITC_FLAG_BOOL(xegtao_mirror, false, "SBX",
+              "With xegtao: the rear-view mirror in races too (its own buffers and passes, so "
+              "it costs extra)");
+ITC_FLAG_STRING(xegtao_temporal, "0.05", "SBX",
+                "With xegtao: each frame's share of the AO kept over frames, which averages "
+                "the noise out (lower: smoother, slower to follow; 1: off)");
+ITC_FLAG_INT32(xegtao_quality, 2, "SBX",
+               "With xegtao: 0 low, 1 medium, 2 high, 3 ultra (more samples a pixel)");
+ITC_FLAG_INT32(xegtao_denoise, 2, "SBX",
+               "With xegtao: denoise passes: 0 none (noisy), 1 sharp, 2 medium, 3 soft");
+ITC_FLAG_STRING(xegtao_radius, "0.75", "SBX",
+                "With xegtao: how far occluders reach, in the game's units (meters)");
+ITC_FLAG_STRING(xegtao_strength, "1.0", "SBX",
+                "With xegtao: how much of the occlusion is applied (0-1; 0: no change)");
+ITC_FLAG_INT32(xegtao_debug, 0, "SBX",
+               "With xegtao: draw one of its buffers over the frame: 0 off, 1 the AO (white: "
+               "none), 2 the normals, 3 the denoiser's edges");
 ITC_FLAG_BOOL(fxaa, false, "SBX",
               "Anti-alias the 3D view with FXAA (cheaper and softer than cmaa2; after it if "
               "both are on), before the post-processing reads it");
@@ -721,6 +745,12 @@ VkCommandBuffer Renderer::BeginFrame() {
                         ITC_FLAG(gbuffer_debug),
                         std::strtof(ITC_FLAG(gbuffer_debug_depth_range).c_str(), nullptr),
                         std::strtof(ITC_FLAG(gbuffer_debug_velocity_scale).c_str(), nullptr));
+    passes_.set_xegtao(ITC_FLAG(xegtao), ITC_FLAG(xegtao_quality), ITC_FLAG(xegtao_denoise),
+                       std::strtof(ITC_FLAG(xegtao_radius).c_str(), nullptr),
+                       std::strtof(ITC_FLAG(xegtao_strength).c_str(), nullptr),
+                       ITC_FLAG(xegtao_debug),
+                       std::strtof(ITC_FLAG(xegtao_temporal).c_str(), nullptr),
+                       ITC_FLAG(xegtao_mirror));
     // The shutter is a length in seconds, or a fraction such as 1/60.
     float shutter = 1.0f / 8.0f;
     if (const std::string& text = ITC_FLAG(blur_frame_blend_shutter); !text.empty()) {

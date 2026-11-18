@@ -57,6 +57,10 @@ struct Draw {
   std::array<uint32_t, 40> bool_loop_constants{};
   // The vertex fetch constants the vertex shader reads: index, then words.
   std::vector<std::array<uint32_t, 3>> vertex_fetches;
+  // Fetch constants 88-95 the vertex shader doesn't read but that hold a
+  // vertex buffer (the stream a model's shader may skip, such as the
+  // course's normals): index, then words.
+  std::vector<std::array<uint32_t, 3>> unread_vertex_fetches;
   std::vector<Texture> textures;
 };
 

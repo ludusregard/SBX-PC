@@ -45,6 +45,18 @@
 //                     these light-space coordinates, when UseProjTex is set
 #include "common.glsl"
 
+// The shader's family for the renderer (passes.cpp, ShaderFamily: 1 the
+// models' lit material, 2 their unlit one, 3 the course's, 4 glass), read
+// from the SPIR-V; nothing reads it here. The glass: the shaders with a
+// third texture coordinate (UV2_REG), which only the windows and light
+// covers have (stream type 0x10, docs/game_data.md); the AO looks through
+// it.
+#ifdef UV2_REG
+layout(constant_id = 901) const int SBX_FAMILY = 4;
+#else
+layout(constant_id = 901) const int SBX_FAMILY = 1;
+#endif
+
 layout(location = POSITION_REG) in vec4 v_position;
 layout(location = NORMAL_REG) in vec4 v_normal;
 layout(location = COLOR_REG) in vec4 v_color;
@@ -65,6 +77,7 @@ layout(location = SHADOW_REG) in vec4 v_shadow;
 #endif
 
 layout(location = 0) out vec4 out_color;
+#include "normals_out.glsl"
 
 // The surface at this pixel.
 vec3 surface_normal() {
@@ -330,4 +343,5 @@ void main() {
 
   if (!xe_alpha_test_passes(color.a)) discard;
   out_color = xe_color_output(color, 0);
+  write_normal(v_normal.xyz);  // the geometry's, without the normal map
 }

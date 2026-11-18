@@ -7,6 +7,11 @@
 //   TX0_UV              color texture tx0 and its coordinates
 #include "common.glsl"
 
+// The shader's family for the renderer (passes.cpp, ShaderFamily: 1 the
+// models' lit material, 2 their unlit one, 3 the course's), read from the
+// SPIR-V; nothing reads it here.
+layout(constant_id = 901) const int SBX_FAMILY = 2;
+
 layout(location = COLOR_REG) in vec4 v_color;
 #ifdef UV0_REG
 layout(location = UV0_REG) in vec4 uv0;

@@ -8,7 +8,10 @@ ps_7C91ACFDA08200EB  constant_color.frag  UV_REG=0             # 00000006
 ps_ECCA4F5E7E71FB5F  screen_motion.frag                        # 00000010, 14, 68
 ps_E0D070FB58A4EA03  textured_color.frag  UV_REG=0 COLOR_REG=1 # 00000012, 18, 20 (glow history)
 ps_BDFAB64758384F20  textured_color.frag  UV_REG=0 COLOR_REG=1 MINUS_ONE  # 00000022
-ps_4F4860F071E25904  textured_color.frag  UV_REG=1 COLOR_REG=2 TEXTURE_ALPHA PROJTEX_CLAMP  # 00022811
+# 22811: in the cockpit view, the windshield's overlay (its texture is the
+# one the lit layer under it uses; frame dump 2026-11-18, draws 2598-2600):
+# glass, which the AO looks through (SBX_GLASS).
+ps_4F4860F071E25904  textured_color.frag  UV_REG=1 COLOR_REG=2 TEXTURE_ALPHA PROJTEX_CLAMP SBX_GLASS  # 00022811
 ps_89DB3429AA053B0E  adapted_luminance.frag                    # 00000034
 ps_39755C8589500F4C  tone_map.frag  LUMINANCE_BIAS=0.1 KNEE=0.25   # 00000044
 ps_8D3C07B2BE57E921  tone_map.frag  LUMINANCE_BIAS=0.05 KNEE=5.0 BRIGHT_PASS  # 00000036

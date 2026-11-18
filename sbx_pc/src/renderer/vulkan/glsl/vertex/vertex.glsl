@@ -13,6 +13,11 @@
 #define fetch_attribute_(n, used)                                                         \
   xe_vfetch(XE_VF##n##_CONSTANT, XE_VF##n##_OFFSET, XE_VF##n##_STRIDE, XE_VF##n##_FORMAT, \
             XE_VF##n##_FLAGS, XE_VF##n##_EXP_ADJUST, vertex_index, used)
+// Vertex fetch n's fetch constant and stride (in words).
+#define XE_VF_CONSTANT_OF(n) XE_VF_CONSTANT_OF_(n)
+#define XE_VF_CONSTANT_OF_(n) XE_VF##n##_CONSTANT
+#define XE_VF_STRIDE_OF(n) XE_VF_STRIDE_OF_(n)
+#define XE_VF_STRIDE_OF_(n) XE_VF##n##_STRIDE
 
 // A D3D matrix constant (four float4 rows, for row vectors: v * M) as a
 // GLSL matrix, so that matrix * v is the same transform. at: the first row,

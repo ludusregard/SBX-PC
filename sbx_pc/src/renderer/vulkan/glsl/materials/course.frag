@@ -10,8 +10,17 @@
 //                 doesn't cover it (by tx1's alpha)
 //   POINT_LIGHTS  the course's point lights (course_lights.glsl), diffuse
 //                 only, added to the vertex color
+//   STREAM_NORMAL_REG  without NORMAL_REG: the interpolator where the vertex
+//                 shader puts the mesh's own normal, which the game's shader
+//                 doesn't read (model.vert); only for the AO's normals
+//                 target, not the shading (0 where the mesh has none)
 // Without a vertex color the shade is white.
 #include "common.glsl"
+
+// The shader's family for the renderer (passes.cpp, ShaderFamily: 1 the
+// models' lit material, 2 their unlit one, 3 the course's), read from the
+// SPIR-V; nothing reads it here.
+layout(constant_id = 901) const int SBX_FAMILY = 3;
 
 #ifdef POSITION_REG
 layout(location = POSITION_REG) in vec4 v_position;
@@ -30,6 +39,12 @@ layout(location = COLOR_REG) in vec4 v_color;
 #endif
 
 layout(location = 0) out vec4 out_color;
+#ifdef STREAM_NORMAL_REG
+layout(location = STREAM_NORMAL_REG) in vec4 v_stream_normal;
+#endif
+#if defined(NORMAL_REG) || defined(STREAM_NORMAL_REG)
+#include "normals_out.glsl"
+#endif
 
 #include "course_surface.glsl"
 #ifdef POINT_LIGHTS
@@ -75,4 +90,9 @@ void main() {
 
   if (!xe_alpha_test_passes(color.a)) discard;
   out_color = xe_color_output(color, 0);
+#ifdef NORMAL_REG
+  write_normal(v_normal.xyz);
+#elif defined(STREAM_NORMAL_REG)
+  write_normal(v_stream_normal.xyz);
+#endif
 }

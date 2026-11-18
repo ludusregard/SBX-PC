@@ -21,6 +21,7 @@
 #include "renderer/vulkan/generated_resolve_frag.h"
 #include "renderer/vulkan/generated_resolve_ms_frag.h"
 #include "renderer/vulkan/generated_resolve_vert.h"
+#include "renderer/vulkan/generated_xegtao.h"
 
 #include "renderer/buffers.h"
 #include "renderer/gpu_memory.h"
@@ -45,6 +46,10 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+// XeGTAO's constants (GTAOConstants, GTAOUpdateConstants), shared with its
+// shaders; its clamp asserts.
+#include <cassert>
+#include "renderer/vulkan/glsl/xegtao/XeGTAO.h"
 #include <rex/graphics/pipeline/shader/spirv_translator.h>
 #include <rex/graphics/register_file.h>
 #include <rex/graphics/registers.h>
@@ -339,21 +344,33 @@ struct PipelineKey {
   uint32_t write_mask;
   // The targets: color format (UNDEFINED for none), depth or not, samples.
   uint32_t color_format, depth, samples;
+  // The view targets (--xegtao; "View targets"): 1 if the rendering has
+  // them (color attachments 1 and 2), the normals' write mask (0xF for the
+  // opaque draws of the shaders that write them), the light's (the color's
+  // for the shaders that write it), and XE_LIGHT (the draw only adds light).
+  uint32_t normals, normals_mask, light_mask, light;
 
   bool operator==(const PipelineKey&) const = default;
 };
 // Hashed and compared as a whole (no padding to hold stray bytes).
-static_assert(sizeof(PipelineKey) == 3 * sizeof(void*) + 18 * sizeof(uint32_t));
+static_assert(sizeof(PipelineKey) == 3 * sizeof(void*) + 22 * sizeof(uint32_t));
 struct PipelineKeyHash {
   size_t operator()(const PipelineKey& key) const {
     return size_t(base::Hash64(&key, sizeof(key)));
   }
 };
-// The key's words after its handles (topology to samples), as the pipeline
+// The key's words after its handles (topology to light), as the pipeline
 // list keeps them (pipeline_list.h): the handles are made again each session.
-constexpr uint32_t kPipelineStateWords = 18;
-static_assert(offsetof(PipelineKey, samples) ==
+constexpr uint32_t kPipelineStateWords = 22;
+static_assert(offsetof(PipelineKey, light) ==
               offsetof(PipelineKey, topology) + 4 * (kPipelineStateWords - 1));
+// The view targets' formats: the normals (the world-space normal * 0.5 +
+// 0.5, alpha 1 where a draw wrote it; glsl/materials/normals_out.glsl) and
+// the light (the color's units; xe_color_output).
+// .x the normal packed 11_11_10, .y its fragment's view distance
+// (glsl/materials/normals_out.glsl).
+constexpr VkFormat kNormalsFormat = VK_FORMAT_R32G32_UINT;
+constexpr VkFormat kLightFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 std::vector<uint32_t> PipelineStateWords(const PipelineKey& key) {
   std::vector<uint32_t> words(kPipelineStateWords);
   std::memcpy(words.data(), &key.topology, 4 * kPipelineStateWords);
@@ -1004,6 +1021,7 @@ struct Passes::State {
   std::map<std::array<uint32_t, 6>, Target> targets;
   Target* bound_color = nullptr;
   Target* bound_depth = nullptr;
+  bool bound_normals = false;  // the color's normals target attached too
   VkExtent2D render_extent{};
   bool rendering = false;
   Target* main_view = nullptr;  // drawn into this frame
@@ -1038,6 +1056,10 @@ struct Passes::State {
   // are made (the first race frame).
   float cmaa2_threshold = 0.05f;
   uint32_t main_view_resolves = 0;  // this frame's, of the main view's color
+  // Where the rear-view mirror's view is resolved (a GPU physical address;
+  // the mirror target, kMirrorPitch): the side and interior mirrors' surfaces
+  // sample it, and take no AO (Draw).
+  uint32_t mirror_texture = 0;
   std::unordered_set<uint32_t> logged_main_view_resolves;
   struct AaView;
   struct Cmaa2 {
@@ -1142,13 +1164,40 @@ struct Passes::State {
     uint64_t last_frame = 0;        // frame_serial when it last ran
   } frame_blend;
   uint64_t frame_serial = 0;  // BeginFrame counts frames
-  // --gbuffer, G-buffer lite (BuildGBuffer; glsl/gbuffer.frag): at the main
-  // view's gbuffer.at-th color resolve (2 by default, the whole scene: the
-  // cars are drawn after the first, the opaque scenery), its depth into
-  // our own buffers, kept past the frame: depth (as drawn, and the view
-  // distance) and the camera's motion vectors, from this frame's and last
-  // frame's camera (the list's, Renderer_ReplayingCamera). --gbuffer_debug
-  // draws one of them over the frame (DrawGBufferDebug).
+  // The 3D views the G-buffer and XeGTAO work on, each with its own: the
+  // race's main view (pitch 1040, 2x MSAA), and in the menus their 3D view
+  // (the garage, the shops, the parking area: pitch 1280, 4x MSAA, drawn in
+  // tiles), each with the list's camera (ListCamera: in the menus the camera
+  // pass their scene updated).
+  enum ViewKind : uint32_t { kRaceView, kMenuView, kMirrorView, kViewKinds };
+  static constexpr const char* kViewNames[kViewKinds] = {"race view", "menu view",
+                                                         "mirror view"};
+  // The rear-view mirror's 3D view in races (--xegtao_mirror): drawn into a
+  // target of pitch 520 with the guest's 4x MSAA (8_8_8_8, not the race
+  // view's 7e3) and resolved at 512x128 (the target and resolve log lines).
+  static constexpr uint32_t kMirrorPitch = 520;
+  static constexpr VkExtent2D kMirrorExtent{512, 128};
+  // A view's camera: its view, projection and view-projection (the game's
+  // row-vector matrices, row by row), or null where it has none this frame.
+  struct ViewCamera {
+    const float* view = nullptr;
+    const float* projection = nullptr;
+    const float* view_projection = nullptr;
+  };
+  ViewCamera CameraOf(ViewKind view);
+  // The list's camera, taken once a frame (Renderer_ReplayingCamera).
+  ListCamera frame_camera;
+  uint64_t frame_camera_serial = ~0ull;
+  const ListCamera& FrameCamera();
+  // Which view `color` is drawn as (kViewKinds: neither).
+  ViewKind ViewOf(const Target& color);
+  // --gbuffer, G-buffer lite (BuildGBuffer; glsl/gbuffer.frag): in a race,
+  // at the main view's gbuffer.at-th color resolve (2 by default, the whole
+  // scene: the cars are drawn after the first, the opaque scenery); with
+  // --xegtao, where it runs. Its depth into our own buffers, kept past the
+  // frame: depth (as drawn, and the view distance) and the camera's motion
+  // vectors, from this frame's and last frame's camera (the list's).
+  // --gbuffer_debug draws one of them over the frame (DrawGBufferDebug).
   struct GBuffer {
     bool enabled = false;
     uint32_t at = 2;
@@ -1169,12 +1218,195 @@ struct Passes::State {
     // Last built frame's camera (the game's view-projection, row vectors).
     float previous[16] = {};
     bool has_previous = false;
+    // Last built frame's view and projection (row vectors), for --xegtao.
+    float view[16] = {};
+    float projection[16] = {};
     bool logged_no_camera = false, logged_no_depth = false, logged_extent = false;
-  } gbuffer;
-  bool CreateGBufferResources(VkExtent2D extent);
-  void BuildGBuffer(VkCommandBuffer commands, uint8_t* base, uint32_t device);
+    bool logged_singular = false, logged_no_set = false;
+  };
+  GBuffer gbuffers[kViewKinds];
+  bool CreateGBufferResources(GBuffer& g, VkExtent2D extent);
+  void BuildGBuffer(VkCommandBuffer commands, uint8_t* base, uint32_t device, ViewKind view);
   // Draws the --gbuffer_debug view over `target`'s top-left `extent`.
   void DrawGBufferDebug(VkCommandBuffer commands, Target& target, VkExtent2D extent);
+  // --xegtao, Intel's XeGTAO (ApplyXeGTAO; glsl/xegtao/, compiled by
+  // glsl/compile_xegtao.py), on each 3D view: right after its G-buffer is
+  // built (for this, even without --gbuffer), from its depth and the
+  // frame's projection: the view-space depth and its MIPs, normals from the
+  // depth, the smooth normals the materials wrote over them where they did
+  // ("View targets"), the AO term, the denoise passes, the AO kept over
+  // frames (the history), then the AO into every sample of the view, under
+  // the light the light target holds (color * ao + light * (1 - ao)), at the
+  // race view's resolve gbuffer.at or the menu view's first tiled resolve:
+  // before the anti-aliasing and the post-processing read it, after every
+  // draw of the 3D scene. Draws stay in the game's order. (Earlier versions
+  // ran it at the first blended draw, which left out the cars and the
+  // cockpit drawn after one, then held blended draws back until after it,
+  // which made the cars see-through and still missed the emissive lights;
+  // John's tests, 2026-11-17.) --xegtao_debug draws one of its buffers over
+  // the frame (DrawXeGTAODebug).
+  struct XeGtao {
+    bool enabled = false;
+    int32_t quality = 2;  // 0 low, 1 medium, 2 high, 3 ultra
+    int32_t denoise = 2;  // passes: 0 none (one pass still writes the final term), 3 soft
+    float radius = 0.75f;  // view space, the game's units (meters)
+    float strength = 1.0f;
+    int32_t debug = 0;    // 0 off; glsl/xegtao/xegtao_debug.frag's modes
+    float temporal = 0.05f;  // each frame's share of the history (1: none)
+    // Fixed since John's tests (2026-11-17; they were flags): draws that
+    // only add light go to the light target too, so the AO doesn't darken
+    // them (Draw); the smooth-alpha solids are dithered into the AO's depth
+    // (Draw); samples no higher than plane_bias (meters) over the center's
+    // tangent plane don't occlude (compile_xegtao.py's patch), fading in
+    // up to twice that: 0.1, over the parking areas' road markings, which
+    // sit 4-8 cm over the ground (BUILD_CRS 1244, the Yoyogi parking
+    // area's mj_* decals; 0.05 left the 8 cm ones in).
+    static constexpr bool light = true;
+    static constexpr bool alpha_depth = true;
+    static constexpr float plane_bias = 0.1f;
+    // The history: a pixel's view distance may change this much (relative)
+    // from frame to frame and still be the same point.
+    static constexpr float kHistoryDepthTolerance = 0.15f;
+    bool tried = false, ready = false;
+    VkExtent2D extent{};
+    static constexpr uint32_t kDepthMips = XE_GTAO_DEPTH_MIP_LEVELS;
+    // The view-space depth (R32F, kDepthMips MIPs; view: all of them),
+    // the normals (R32UI, 11_11_10), the edges (R32F), the AO term (R32UI,
+    // ping-ponged by the denoise passes). All kept in GENERAL.
+    Image depth, normals, edges, ao[2];
+    // The AO's depth (R32F, raw; glsl/xegtao/xegtao_depth.comp): what the
+    // prefilter and the normals from depth read (binding 1), in place of the
+    // G-buffer's depth: with a normals target, its view distances over it
+    // (no glass; the smooth-alpha solids dithered by their alpha). Sets by
+    // the normals target's view (null: none).
+    Image ao_depth;
+    // Where the AO isn't applied (R8: 1 on the mirrors' surfaces; written
+    // with ao_depth, read by the history pass).
+    Image no_ao;
+    VkDescriptorSetLayout depth_set_layout = VK_NULL_HANDLE;
+    VkPipelineLayout depth_layout = VK_NULL_HANDLE;
+    VkPipeline depth_pipeline = VK_NULL_HANDLE, depth_pipeline_normals = VK_NULL_HANDLE,
+               depth_pipeline_normals_ms = VK_NULL_HANDLE;
+    VkDescriptorPool depth_pool = VK_NULL_HANDLE;
+    std::map<VkImageView, VkDescriptorSet> depth_sets;
+    // The AO kept over frames (RG32F: visibility, view distance;
+    // glsl/xegtao/xegtao_temporal.comp): read one, write the other.
+    Image history[2];
+    uint32_t history_read = 0;
+    uint64_t history_frame = 0;  // frame_serial when last written
+    uint32_t noise_frame = 0;    // XeGTAO's NoiseIndex, with a history
+    std::array<VkImageView, kDepthMips> depth_mip_views{};
+    bool layouts_set = false;
+    VkSampler sampler = VK_NULL_HANDLE;  // point, clamped, every MIP
+    VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    // sets[i]: the denoise reads ao[i] and writes ao[1 - i]; the main pass
+    // writes ao[0] in both.
+    VkDescriptorSet sets[2] = {};
+    // The history pass: temporal_sets[i][j] reads ao[i] and history[j],
+    // writes history[1 - j].
+    VkDescriptorSetLayout temporal_set_layout = VK_NULL_HANDLE;
+    VkPipelineLayout temporal_layout = VK_NULL_HANDLE;
+    VkPipeline temporal_pipeline = VK_NULL_HANDLE;
+    VkDescriptorSet temporal_sets[2][2] = {};
+    // history[i], for the debug view.
+    VkDescriptorSet debug_sets[2] = {};
+    // Prefilter, normals, main low/medium/high/ultra, denoise, last denoise.
+    std::array<VkPipeline, 8> pipelines{};
+    VkShaderModule apply_pixel = VK_NULL_HANDLE, debug_pixel = VK_NULL_HANDLE;
+    VkDescriptorSetLayout debug_set_layout = VK_NULL_HANDLE;
+    VkPipelineLayout debug_layout = VK_NULL_HANDLE;
+    // The apply's by target format and samples, and light target samples
+    // (multisampled or not); the debug view's by target.
+    std::map<std::tuple<VkFormat, VkSampleCountFlagBits, bool>, VkPipeline> apply_pipelines;
+    std::map<std::pair<VkFormat, VkSampleCountFlagBits>, VkPipeline> debug_pipelines;
+    uint32_t final_ao = 0;      // which ao[] the last frame ended in
+    uint64_t applied_frame = 0;  // frame_serial when it last ran
+    bool logged_no_gbuffer = false;
+    // The materials' normals merged over the ones from depth
+    // (glsl/xegtao/xegtao_normals.comp; single and multisampled): a set by
+    // the normals target's view.
+    // The view targets (fixed since 2026-11-17; was --xegtao_normals).
+    static constexpr bool material_normals = true;
+    VkDescriptorSetLayout merge_set_layout = VK_NULL_HANDLE;
+    VkPipelineLayout merge_layout = VK_NULL_HANDLE;
+    VkPipeline merge_pipeline = VK_NULL_HANDLE, merge_pipeline_ms = VK_NULL_HANDLE;
+    VkDescriptorPool merge_pool = VK_NULL_HANDLE;
+    std::map<VkImageView, VkDescriptorSet> merge_sets;
+    bool logged_normals = false;
+    // The apply (glsl/xegtao/xegtao_apply.frag): the history and the light
+    // target (or a black texel), 4 bytes; sets by history and light target.
+    VkDescriptorSetLayout apply_set_layout = VK_NULL_HANDLE;
+    VkPipelineLayout apply_layout = VK_NULL_HANDLE;
+    VkShaderModule apply_pixel_ms = VK_NULL_HANDLE;
+    VkDescriptorPool apply_pool = VK_NULL_HANDLE;
+    std::map<std::pair<uint32_t, VkImageView>, VkDescriptorSet> apply_light_sets;
+  };
+  XeGtao xegtaos[kViewKinds];
+  // A black 1x1 light target, for the apply without one.
+  Image no_light;
+  bool no_light_ready = false;
+  bool CreateXeGTAOResources(ViewKind view, VkExtent2D extent);
+  // Builds the view's G-buffer and runs its AO, once a frame: at the race
+  // view's resolve gbuffer.at, the menu view's first tiled resolve.
+  void XeGTAOAtResolve(VkCommandBuffer commands, uint8_t* base, uint32_t device, Target& main,
+                       ViewKind view);
+  void ApplyXeGTAO(VkCommandBuffer commands, Target& main, ViewKind view);
+  // The normals target's smooth normals (world space) over XeGTAO's from
+  // depth (its view space), where a draw wrote one. False if it didn't run.
+  struct NormalsTarget;
+  bool MergeNormals(VkCommandBuffer commands, ViewKind view, NormalsTarget& normals, uint32_t w,
+                    uint32_t h, float tan_half_x, float tan_half_y);
+  // Draws the --xegtao_debug view over `target`'s top-left `extent`.
+  void DrawXeGTAODebug(VkCommandBuffer commands, Target& target, VkExtent2D extent);
+  // View targets (--xegtao with --native_shaders): a 3D view's color target
+  // gets two color attachments of ours while it's drawn, the same size and
+  // samples, cleared at its first rendering each frame. The game never sees
+  // them. Only the hand-written shaders write them (so with
+  // --native_shaders):
+  // - normals (attachment 1, R32G32_UINT): every hand-written shader writes
+  //   its view distance there in its depth-writing draws, and the materials
+  //   with a normal their smooth world-space normal
+  //   (glsl/materials/normals_out.glsl); not the glass, and the smooth-alpha
+  //   solids dithered (Draw). The distances are the AO's depth
+  //   (glsl/xegtao/xegtao_depth.comp), the normals merged where their
+  //   distance is that depth's;
+  // - light (attachment 2, RGBA16F): every shader writes it from its color
+  //   (xe_color_output), blended as the color is: the color itself in the
+  //   draws that only add light (the models' unlit material: glow planes,
+  //   emissive bitmaps; additive blends: flares, underglow), black with the
+  //   color's alpha in the rest, so it holds the light those added, faded
+  //   as the color fades it. The AO leaves that light alone.
+  struct NormalsTarget {
+    bool ready = false;
+    Image image, light;
+    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImageLayout light_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+    uint64_t cleared_frame = ~0ull;
+  };
+  std::map<const Target*, NormalsTarget> normals_targets;
+  // `color`'s normals target if it has one (made on first use), else null.
+  NormalsTarget* NormalsFor(const Target* color);
+  // A pixel shader as the view targets see it, from its SPIR-V (ports only:
+  // a translated shader's locations 1 and 2 are the game's render targets):
+  // whether it writes the normals (a location 1 output) and the light
+  // (location 2, with the XE_LIGHT constant, 900), and its family (the
+  // SBX_FAMILY constant, 901).
+  enum ShaderFamily : uint32_t {
+    kOtherShader,
+    kModelLit,
+    kModelUnlit,
+    kCourse,
+    kModelGlass,  // any shader the AO looks through (SBX_FAMILY 4)
+  };
+  struct ShaderInfo {
+    bool writes_normal = false, writes_light = false;
+    ShaderFamily family = kOtherShader;
+  };
+  std::unordered_map<const TranslatedShader*, ShaderInfo> shader_infos;
+  const ShaderInfo& InfoOf(const TranslatedShader& shader);
   bool CreateFrameBlendResources(const Target& main, VkExtent2D extent);
   void ApplyFrameBlend(VkCommandBuffer commands, Target& main);
   // Draws the main view's tonemapped average into `image` (left in
@@ -1183,9 +1415,12 @@ struct Passes::State {
                    VkImageLayout& layout, VkExtent2D extent, float exposure);
   // A full-screen draw into every sample of the main view with `pipeline`
   // and `set` (resolve_layout's), push constants `push` (or none).
+  // `layout` in the place of resolve_layout, if given.
   void DrawIntoMainView(VkCommandBuffer commands, Target& main, VkExtent2D extent,
                         VkPipeline pipeline, VkDescriptorSet set, const void* push,
-                        uint32_t push_size);
+                        uint32_t push_size, VkPipelineLayout layout = VK_NULL_HANDLE);
+  // The black 1x1 light target (no_light), cleared on `commands`.
+  bool MakeNoLight(VkCommandBuffer commands);
   void ApplyFxaa(VkCommandBuffer commands, AaView& v, Target& main, VkExtent2D extent,
                  float exposure);
   struct Resolved {
@@ -1373,7 +1608,8 @@ struct Passes::State {
   bool CreateImage(Image& out, VkImageType type, VkImageViewType view_type, VkFormat format,
                    VkExtent3D extent, uint32_t layers, VkImageUsageFlags usage,
                    VkImageAspectFlags aspect, VkImageCreateFlags flags = 0,
-                   VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
+                   VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT,
+                   uint32_t mip_levels = 1);
   // The bound surface's target, made (and cleared) on first use; null if
   // its format isn't drawn.
   Target* GetTarget(VkCommandBuffer commands, uint8_t* base, uint32_t object, bool depth);
@@ -1402,10 +1638,11 @@ struct Passes::State {
   VkPipeline GetResolvePipeline(VkFormat format, bool multisample);
   // A pipeline drawing the resolve's viewport-covering triangle with
   // `pixel`, into one color attachment (or `count` of `formats`, if given),
-  // no blending.
+  // with `blending` for every attachment (none if null).
   VkPipeline MakeFullscreenPipeline(VkShaderModule pixel, VkPipelineLayout layout,
                                     VkFormat format, VkSampleCountFlagBits samples,
-                                    uint32_t count = 1, const VkFormat* formats = nullptr);
+                                    uint32_t count = 1, const VkFormat* formats = nullptr,
+                                    const VkPipelineColorBlendAttachmentState* blending = nullptr);
   bool CreateMovieResources(VkExtent2D extent);
   VkPipeline GetMoviePipeline(VkFormat format, VkSampleCountFlagBits samples);
   void EndRendering(VkCommandBuffer commands);
@@ -1470,14 +1707,15 @@ struct Passes::State {
 bool Passes::State::CreateImage(Image& out, VkImageType type, VkImageViewType view_type,
                                   VkFormat format, VkExtent3D extent, uint32_t layers,
                                   VkImageUsageFlags usage, VkImageAspectFlags aspect,
-                                  VkImageCreateFlags flags, VkSampleCountFlagBits samples) {
+                                  VkImageCreateFlags flags, VkSampleCountFlagBits samples,
+                                  uint32_t mip_levels) {
   VkDevice device = context.device;
   VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   info.flags = flags;
   info.imageType = type;
   info.format = format;
   info.extent = extent;
-  info.mipLevels = 1;
+  info.mipLevels = mip_levels;
   info.arrayLayers = layers;
   info.samples = samples;
   info.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -1502,7 +1740,7 @@ bool Passes::State::CreateImage(Image& out, VkImageType type, VkImageViewType vi
   view.image = out.image;
   view.viewType = view_type;
   view.format = format;
-  view.subresourceRange = {aspect, 0, 1, 0, layers};
+  view.subresourceRange = {aspect, 0, mip_levels, 0, layers};
   return vk::vkCreateImageView(device, &view, nullptr, &out.view) == VK_SUCCESS;
 }
 
@@ -2484,10 +2722,16 @@ VkPipeline CreateDrawPipeline(VkDevice device, VkPipelineCache cache, const Pipe
   stages[stage_count].stage = VK_SHADER_STAGE_VERTEX_BIT;
   stages[stage_count].module = key.vertex;
   stages[stage_count++].pName = "main";
+  // XE_LIGHT (constant 900; glsl/game/xe_interface.glsl): the draw only
+  // adds light. Shaders without the constant ignore it.
+  const VkBool32 light = key.light ? VK_TRUE : VK_FALSE;
+  const VkSpecializationMapEntry light_entry{900, 0, sizeof(VkBool32)};
+  const VkSpecializationInfo light_specialization{1, &light_entry, sizeof(light), &light};
   if (key.pixel) {
     stages[stage_count] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
     stages[stage_count].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
     stages[stage_count].module = key.pixel;
+    stages[stage_count].pSpecializationInfo = &light_specialization;
     stages[stage_count++].pName = "main";
   }
   VkPipelineVertexInputStateCreateInfo vertex_input{
@@ -2522,10 +2766,16 @@ VkPipeline CreateDrawPipeline(VkDevice device, VkPipelineCache cache, const Pipe
   attachment.dstAlphaBlendFactor = VkBlendFactor(key.dst_alpha);
   attachment.alphaBlendOp = VkBlendOp(key.alpha_op);
   attachment.colorWriteMask = key.write_mask;
+  // The view targets, if the rendering has them: the normals never
+  // blended; the light blended as the color is.
+  VkPipelineColorBlendAttachmentState attachments[3] = {attachment, {}, attachment};
+  attachments[1].colorWriteMask = key.normals_mask;
+  attachments[2].colorWriteMask = key.light_mask;
   VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
   bool has_color = key.color_format != VK_FORMAT_UNDEFINED;
-  blend.attachmentCount = has_color ? 1 : 0;
-  blend.pAttachments = &attachment;
+  const uint32_t color_count = has_color ? (key.normals ? 3 : 1) : 0;
+  blend.attachmentCount = color_count;
+  blend.pAttachments = attachments;
   // Depth bias is set per draw.
   raster.depthBiasEnable = key.depth;
   VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
@@ -2533,10 +2783,11 @@ VkPipeline CreateDrawPipeline(VkDevice device, VkPipelineCache cache, const Pipe
   VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
   dynamic.dynamicStateCount = 4;
   dynamic.pDynamicStates = dynamic_states;
-  VkFormat color_format = VkFormat(key.color_format);
+  const VkFormat color_formats[3] = {VkFormat(key.color_format), kNormalsFormat,
+                                     kLightFormat};
   VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-  rendering.colorAttachmentCount = has_color ? 1 : 0;
-  rendering.pColorAttachmentFormats = &color_format;
+  rendering.colorAttachmentCount = color_count;
+  rendering.pColorAttachmentFormats = color_formats;
   rendering.depthAttachmentFormat = key.depth ? kDepthFormat : VK_FORMAT_UNDEFINED;
   rendering.stencilAttachmentFormat = rendering.depthAttachmentFormat;
 
@@ -2666,11 +2917,16 @@ void Passes::State::EndRendering(VkCommandBuffer commands) {
 }
 
 void Passes::State::BeginRendering(VkCommandBuffer commands, Target* color, Target* depth) {
-  if (rendering && bound_color == color && bound_depth == depth) {
+  NormalsTarget* normals = NormalsFor(color);
+  if (rendering && bound_color == color && bound_depth == depth &&
+      bound_normals == (normals != nullptr)) {
     return;
   }
   EndRendering(commands);
-  VkRenderingAttachmentInfo color_attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+  VkRenderingAttachmentInfo color_attachments[3] = {
+      {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}, {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO},
+      {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO}};
+  VkRenderingAttachmentInfo& color_attachment = color_attachments[0];
   VkRenderingAttachmentInfo depth_attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
   VkRenderingInfo info{VK_STRUCTURE_TYPE_RENDERING_INFO};
   VkExtent2D extent{UINT32_MAX, UINT32_MAX};
@@ -2682,8 +2938,30 @@ void Passes::State::BeginRendering(VkCommandBuffer commands, Target* color, Targ
     color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
     color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     info.colorAttachmentCount = 1;
-    info.pColorAttachments = &color_attachment;
+    info.pColorAttachments = color_attachments;
     extent = color->extent;
+    if (normals) {
+      // The view targets, cleared at their first rendering of the frame
+      // (0: no normal; no light).
+      Transition(commands, normals->image.image, VK_IMAGE_ASPECT_COLOR_BIT, normals->layout,
+                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+      Transition(commands, normals->light.image, VK_IMAGE_ASPECT_COLOR_BIT,
+                 normals->light_layout, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+      const VkAttachmentLoadOp load = normals->cleared_frame == frame_serial
+                                          ? VK_ATTACHMENT_LOAD_OP_LOAD
+                                          : VK_ATTACHMENT_LOAD_OP_CLEAR;
+      const VkImageView views[2] = {normals->image.view, normals->light.view};
+      for (uint32_t i = 0; i < 2; i++) {
+        VkRenderingAttachmentInfo& n = color_attachments[1 + i];
+        n.imageView = views[i];
+        n.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        n.loadOp = load;
+        n.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        n.clearValue.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+      }
+      normals->cleared_frame = frame_serial;
+      info.colorAttachmentCount = 3;
+    }
   }
   if (depth) {
     Transition(commands, depth->image.image, depth->aspects(), depth->layout,
@@ -2702,6 +2980,7 @@ void Passes::State::BeginRendering(VkCommandBuffer commands, Target* color, Targ
   vk::vkCmdBeginRendering(commands, &info);
   bound_color = color;
   bound_depth = depth;
+  bound_normals = normals != nullptr;
   render_extent = extent;
   rendering = true;
 }
@@ -3411,7 +3690,10 @@ void Passes::State::DrawAaInput(VkCommandBuffer commands, AaView& v, Target& mai
 
 void Passes::State::DrawIntoMainView(VkCommandBuffer commands, Target& main, VkExtent2D extent,
                                      VkPipeline pipeline, VkDescriptorSet set, const void* push,
-                                     uint32_t push_size) {
+                                     uint32_t push_size, VkPipelineLayout layout) {
+  if (!layout) {
+    layout = resolve_layout;
+  }
   EndRendering(commands);
   Transition(commands, main.image.image, VK_IMAGE_ASPECT_COLOR_BIT, main.layout,
              VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
@@ -3431,11 +3713,10 @@ void Passes::State::DrawIntoMainView(VkCommandBuffer commands, Target& main, VkE
   vk::vkCmdSetViewport(commands, 0, 1, &viewport);
   vk::vkCmdSetScissor(commands, 0, 1, &area);
   vk::vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-  vk::vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, resolve_layout, 0, 1,
-                              &set, 0, nullptr);
+  vk::vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set, 0,
+                              nullptr);
   if (push_size) {
-    vk::vkCmdPushConstants(commands, resolve_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, push_size,
-                           push);
+    vk::vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, push_size, push);
   }
   vk::vkCmdDraw(commands, 3, 1, 0, 0);
   vk::vkCmdEndRendering(commands);
@@ -3624,9 +3905,53 @@ bool InvertMatrix(const float m[16], float out[16]) {
 
 }  // namespace
 
-bool Passes::State::CreateGBufferResources(VkExtent2D extent) {
+const ListCamera& Passes::State::FrameCamera() {
+  if (frame_camera_serial != frame_serial) {
+    frame_camera_serial = frame_serial;
+    frame_camera = Renderer_ReplayingCamera();
+  }
+  return frame_camera;
+}
+
+Passes::State::ViewCamera Passes::State::CameraOf(ViewKind view) {
+  const ListCamera& camera = FrameCamera();
+  ViewCamera out;
+  if (view == kMirrorView ? camera.valid && camera.in_race && camera.mirror_valid
+                          : camera.valid && camera.in_race == (view == kRaceView)) {
+    const bool mirror = view == kMirrorView;
+    out.view = mirror ? camera.mirror_view : camera.view;
+    out.projection = mirror ? camera.mirror_projection : camera.projection;
+    out.view_projection = mirror ? camera.mirror_view_projection : camera.view_projection;
+  }
+  return out;
+}
+
+Passes::State::ViewKind Passes::State::ViewOf(const Target& color) {
+  if (color.depth) {
+    return kViewKinds;
+  }
+  // The mirror's (8_8_8_8), in races with its camera.
+  if (color.surface.msaa == 2 && color.surface.pitch == kMirrorPitch) {
+    return CameraOf(kMirrorView).view ? kMirrorView : kViewKinds;
+  }
+  if (color.format != VK_FORMAT_R16G16B16A16_SFLOAT) {
+    return kViewKinds;
+  }
+  if (IsMainViewSurface(color.surface)) {
+    return kRaceView;
+  }
+  // The guest's 4x (whatever --msaa draws), outside races.
+  if (color.surface.msaa == 2) {
+    const ListCamera& camera = FrameCamera();
+    if (camera.valid && !camera.in_race) {
+      return kMenuView;
+    }
+  }
+  return kViewKinds;
+}
+
+bool Passes::State::CreateGBufferResources(GBuffer& g, VkExtent2D extent) {
   VkDevice device = context.device;
-  GBuffer& g = gbuffer;
   g.extent = extent;
   const VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                                   VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
@@ -3685,43 +4010,58 @@ bool Passes::State::CreateGBufferResources(VkExtent2D extent) {
   return g.build_pipeline != VK_NULL_HANDLE && g.build_pipeline_ms != VK_NULL_HANDLE;
 }
 
-void Passes::State::BuildGBuffer(VkCommandBuffer commands, uint8_t* base, uint32_t device) {
-  GBuffer& g = gbuffer;
+void Passes::State::BuildGBuffer(VkCommandBuffer commands, uint8_t* base, uint32_t device,
+                                 ViewKind view) {
+  GBuffer& g = gbuffers[view];
+  const char* name = kViewNames[view];
   if (g.built_frame == frame_serial) {
     return;  // once a frame
   }
-  const ListCamera camera = Renderer_ReplayingCamera();
-  if (!camera.valid) {
+  const ViewCamera camera = CameraOf(view);
+  if (!camera.view) {
     if (!g.logged_no_camera) {
       g.logged_no_camera = true;
-      ITC_LOG_INFO("native renderer: gbuffer: a main view frame without the camera (not a "
-                   "race, as of its pass); skipped until a race's");
+      ITC_LOG_INFO("native renderer: gbuffer: a {} frame without its camera (in a race, camera "
+                   "pass 0, or the mirror's; in the menus, their 3D scene's); skipped until one "
+                   "has it",
+                   name);
     }
     g.has_previous = false;
     return;
   }
   uint32_t depth_object = guest::LoadU32(base, device + kDeviceDepthStencil);
   Target* depth = depth_object ? GetTarget(commands, base, depth_object, true) : nullptr;
-  if (!depth || !IsMainViewSurface(depth->surface)) {
+  const bool view_depth =
+      depth && (view == kRaceView    ? IsMainViewSurface(depth->surface)
+                : view == kMirrorView ? depth->surface.msaa == 2 &&
+                                            depth->surface.pitch == kMirrorPitch
+                                      : depth->surface.msaa == 2);
+  if (!view_depth) {
     if (!g.logged_no_depth) {
       g.logged_no_depth = true;
-      ITC_LOG_WARN("native renderer: gbuffer: at the main view's resolve {} the depth bound "
-                   "isn't the main view's ({}); skipped",
-                   g.at, depth ? "another surface" : "none");
+      ITC_LOG_WARN("native renderer: gbuffer: the depth bound isn't the {}'s ({}); skipped",
+                   name, depth ? "another surface" : "none");
     }
     return;
   }
-  const VkExtent2D extent{std::min(main_view_extent.width, depth->extent.width),
-                          std::min(main_view_extent.height, depth->extent.height)};
+  const VkExtent2D extent =
+      view == kRaceView ? VkExtent2D{std::min(main_view_extent.width, depth->extent.width),
+                                     std::min(main_view_extent.height, depth->extent.height)}
+      : view == kMirrorView
+          ? VkExtent2D{std::min(ScaledBy(kMirrorExtent.width, depth->scale), depth->extent.width),
+                       std::min(ScaledBy(kMirrorExtent.height, depth->scale),
+                                depth->extent.height)}
+          : depth->extent;
   if (!g.tried) {
     g.tried = true;
-    g.ready = CreateGBufferResources(extent);
+    g.ready = CreateGBufferResources(g, extent);
     if (g.ready) {
-      ITC_LOG_INFO("native renderer: gbuffer: depth and camera motion vectors ({}x{}) at the "
-                   "main view's color resolve {} of a frame",
-                   extent.width, extent.height, g.at);
+      ITC_LOG_INFO("native renderer: gbuffer: depth and camera motion vectors ({}x{}) on the "
+                   "{}",
+                   extent.width, extent.height, name);
     } else {
-      ITC_LOG_ERROR("native renderer: gbuffer: couldn't create its resources; off");
+      ITC_LOG_ERROR("native renderer: gbuffer: couldn't create the {}'s resources; off there",
+                    name);
     }
   }
   if (!g.ready) {
@@ -3730,14 +4070,19 @@ void Passes::State::BuildGBuffer(VkCommandBuffer commands, uint8_t* base, uint32
   if (extent.width != g.extent.width || extent.height != g.extent.height) {
     if (!g.logged_extent) {
       g.logged_extent = true;
-      ITC_LOG_WARN("native renderer: gbuffer: the main view is {}x{}, its buffers {}x{}; "
-                   "skipped",
-                   extent.width, extent.height, g.extent.width, g.extent.height);
+      ITC_LOG_WARN("native renderer: gbuffer: the {} is {}x{}, its buffers {}x{}; skipped",
+                   name, extent.width, extent.height, g.extent.width, g.extent.height);
     }
     return;
   }
   float inverse[16];
   if (!InvertMatrix(camera.view_projection, inverse)) {
+    if (!g.logged_singular) {
+      g.logged_singular = true;
+      ITC_LOG_WARN("native renderer: gbuffer: the {}'s camera view-projection can't be "
+                   "inverted; skipped",
+                   name);
+    }
     g.has_previous = false;
     return;
   }
@@ -3766,6 +4111,11 @@ void Passes::State::BuildGBuffer(VkCommandBuffer commands, uint8_t* base, uint32
   alloc.descriptorSetCount = 1;
   alloc.pSetLayouts = &resolve_set_layout;
   if (vk::vkAllocateDescriptorSets(context.device, &alloc, &set) != VK_SUCCESS) {
+    if (!g.logged_no_set) {
+      g.logged_no_set = true;
+      ITC_LOG_WARN("native renderer: gbuffer: no descriptor set for the {} this frame; skipped",
+                   name);
+    }
     return;
   }
   const VkImageLayout read_layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
@@ -3819,15 +4169,25 @@ void Passes::State::BuildGBuffer(VkCommandBuffer commands, uint8_t* base, uint32
   // The depth target goes back to drawing at the next BeginRendering.
 
   std::memcpy(g.previous, camera.view_projection, sizeof(g.previous));
+  std::memcpy(g.view, camera.view, sizeof(g.view));
+  std::memcpy(g.projection, camera.projection, sizeof(g.projection));
   g.has_previous = true;
   g.built_frame = frame_serial;
 }
 
 void Passes::State::DrawGBufferDebug(VkCommandBuffer commands, Target& target, VkExtent2D extent) {
-  GBuffer& g = gbuffer;
-  if (!g.ready || g.debug <= 0 || g.built_frame != frame_serial) {
+  // The view's built this frame.
+  GBuffer* built = nullptr;
+  for (GBuffer& candidate : gbuffers) {
+    if (candidate.ready && candidate.built_frame == frame_serial) {
+      built = &candidate;
+      break;
+    }
+  }
+  if (!built || built->debug <= 0) {
     return;
   }
+  GBuffer& g = *built;
   // The game's own velocity buffer (mode 3): half the main view, 16_16.
   Target* game_velocity = nullptr;
   for (auto& [key, t] : targets) {
@@ -3919,6 +4279,878 @@ void Passes::State::DrawGBufferDebug(VkCommandBuffer commands, Target& target, V
   recorded.valid = false;
 }
 
+bool Passes::State::CreateXeGTAOResources(ViewKind view, VkExtent2D extent) {
+  VkDevice device = context.device;
+  XeGtao& x = xegtaos[view];
+  const GBuffer& gbuffer = gbuffers[view];
+  x.extent = extent;
+  const uint32_t w = extent.width, h = extent.height;
+  constexpr VkImageUsageFlags kUsage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  auto image = [&](Image& out, VkFormat format, uint32_t mips) {
+    // (All sampled with texelFetch or point sampling; none needs linear
+    // filtering.)
+    return CreateImage(out, VK_IMAGE_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D, format, {w, h, 1}, 1, kUsage,
+                       VK_IMAGE_ASPECT_COLOR_BIT, 0, VK_SAMPLE_COUNT_1_BIT, mips);
+  };
+  if (!image(x.depth, VK_FORMAT_R32_SFLOAT, XeGtao::kDepthMips) ||
+      !image(x.ao_depth, VK_FORMAT_R32_SFLOAT, 1) || !image(x.no_ao, VK_FORMAT_R8_UNORM, 1) ||
+      !image(x.normals, VK_FORMAT_R32_UINT, 1) || !image(x.edges, VK_FORMAT_R32_SFLOAT, 1) ||
+      !image(x.ao[0], VK_FORMAT_R32_UINT, 1) || !image(x.ao[1], VK_FORMAT_R32_UINT, 1) ||
+      !image(x.history[0], VK_FORMAT_R32G32_SFLOAT, 1) ||
+      !image(x.history[1], VK_FORMAT_R32G32_SFLOAT, 1)) {
+    return false;
+  }
+  // The prefilter writes each MIP through its own view.
+  for (uint32_t mip = 0; mip < XeGtao::kDepthMips; mip++) {
+    VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    view.image = x.depth.image;
+    view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view.format = VK_FORMAT_R32_SFLOAT;
+    view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, 1};
+    if (vk::vkCreateImageView(device, &view, nullptr, &x.depth_mip_views[mip]) != VK_SUCCESS) {
+      return false;
+    }
+  }
+  // Point sampling of every MIP, clamped (the sample's g_samplerPointClamp).
+  VkSamplerCreateInfo sampler_info{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+  sampler_info.magFilter = sampler_info.minFilter = VK_FILTER_NEAREST;
+  sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+  sampler_info.addressModeU = sampler_info.addressModeV = sampler_info.addressModeW =
+      VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  sampler_info.maxLod = VK_LOD_CLAMP_NONE;
+  if (vk::vkCreateSampler(device, &sampler_info, nullptr, &x.sampler) != VK_SUCCESS) {
+    return false;
+  }
+
+  // Set 0 (glsl/xegtao/sbx_xegtao.hlsl's bindings 1-15).
+  auto type_of = [](uint32_t binding) {
+    switch (binding) {
+      case 1: case 8: case 9: case 13: case 14:
+        return VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+      case 2:
+        return VK_DESCRIPTOR_TYPE_SAMPLER;
+      default:
+        return VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    }
+  };
+  constexpr uint32_t kBindings = 15;
+  VkDescriptorSetLayoutBinding bindings[kBindings];
+  for (uint32_t i = 0; i < kBindings; i++) {
+    bindings[i] = {i + 1, type_of(i + 1), 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+  }
+  VkDescriptorSetLayoutCreateInfo set_info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+  set_info.bindingCount = kBindings;
+  set_info.pBindings = bindings;
+  if (vk::vkCreateDescriptorSetLayout(device, &set_info, nullptr, &x.set_layout) != VK_SUCCESS) {
+    return false;
+  }
+  VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(XeGTAO::GTAOConstants)};
+  VkPipelineLayoutCreateInfo layout_info{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+  layout_info.setLayoutCount = 1;
+  layout_info.pSetLayouts = &x.set_layout;
+  layout_info.pushConstantRangeCount = 1;
+  layout_info.pPushConstantRanges = &push;
+  if (vk::vkCreatePipelineLayout(device, &layout_info, nullptr, &x.layout) != VK_SUCCESS) {
+    return false;
+  }
+  // The debug view: the AO term, the normals, the edges, and 12 bytes
+  // (glsl/xegtao/xegtao_debug.frag).
+  VkDescriptorSetLayoutBinding debug_bindings[3];
+  for (uint32_t i = 0; i < 3; i++) {
+    debug_bindings[i] = {i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+                         VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+  }
+  set_info.bindingCount = 3;
+  set_info.pBindings = debug_bindings;
+  if (vk::vkCreateDescriptorSetLayout(device, &set_info, nullptr, &x.debug_set_layout) !=
+      VK_SUCCESS) {
+    return false;
+  }
+  VkPushConstantRange debug_push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, 12};
+  layout_info.pSetLayouts = &x.debug_set_layout;
+  layout_info.pPushConstantRanges = &debug_push;
+  if (vk::vkCreatePipelineLayout(device, &layout_info, nullptr, &x.debug_layout) != VK_SUCCESS) {
+    return false;
+  }
+
+  // The history pass: four images, a storage image and the no-AO mask, 12
+  // bytes (glsl/xegtao/xegtao_temporal.comp).
+  VkDescriptorSetLayoutBinding temporal_bindings[6];
+  for (uint32_t i = 0; i < 6; i++) {
+    temporal_bindings[i] = {i,
+                            i != 4 ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+                                   : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                            1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+  }
+  set_info.bindingCount = 6;
+  set_info.pBindings = temporal_bindings;
+  if (vk::vkCreateDescriptorSetLayout(device, &set_info, nullptr, &x.temporal_set_layout) !=
+      VK_SUCCESS) {
+    return false;
+  }
+  VkPushConstantRange temporal_push{VK_SHADER_STAGE_COMPUTE_BIT, 0, 12};
+  layout_info.pSetLayouts = &x.temporal_set_layout;
+  layout_info.pPushConstantRanges = &temporal_push;
+  if (vk::vkCreatePipelineLayout(device, &layout_info, nullptr, &x.temporal_layout) !=
+      VK_SUCCESS) {
+    return false;
+  }
+
+  // Two compute sets (by which ao[] the denoise reads), four history sets
+  // and two debug sets (by history[]).
+  VkDescriptorPoolSize pool_sizes[4] = {
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 2 * 5},
+      {VK_DESCRIPTOR_TYPE_SAMPLER, 2},
+      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2 * 9 + 4},
+      {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4 * 5 + 2 * 3}};
+  VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+  pool_info.maxSets = 8;
+  pool_info.poolSizeCount = 4;
+  pool_info.pPoolSizes = pool_sizes;
+  if (vk::vkCreateDescriptorPool(device, &pool_info, nullptr, &x.pool) != VK_SUCCESS) {
+    return false;
+  }
+  const VkDescriptorSetLayout set_layouts[8] = {
+      x.set_layout,          x.set_layout,          x.debug_set_layout,
+      x.debug_set_layout,    x.temporal_set_layout, x.temporal_set_layout,
+      x.temporal_set_layout, x.temporal_set_layout};
+  VkDescriptorSet sets[8];
+  VkDescriptorSetAllocateInfo set_alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+  set_alloc.descriptorPool = x.pool;
+  set_alloc.descriptorSetCount = 8;
+  set_alloc.pSetLayouts = set_layouts;
+  if (vk::vkAllocateDescriptorSets(device, &set_alloc, sets) != VK_SUCCESS) {
+    return false;
+  }
+  for (uint32_t i = 0; i < 2; i++) {
+    x.sets[i] = sets[i];
+    x.debug_sets[i] = sets[2 + i];
+    x.temporal_sets[i][0] = sets[4 + 2 * i];
+    x.temporal_sets[i][1] = sets[5 + 2 * i];
+  }
+  // The images live as long as the sets: written once. Ours stay in GENERAL;
+  // the G-buffer's depth is read in SHADER_READ_ONLY_OPTIMAL (BuildGBuffer
+  // leaves it there).
+  constexpr VkImageLayout kGeneral = VK_IMAGE_LAYOUT_GENERAL;
+  std::vector<VkDescriptorImageInfo> infos;
+  infos.reserve(96);  // pointers into it are kept by writes
+  std::vector<VkWriteDescriptorSet> writes;
+  auto write = [&](VkDescriptorSet set, uint32_t binding, VkDescriptorType type,
+                   VkDescriptorImageInfo info) {
+    infos.push_back(info);
+    VkWriteDescriptorSet& w = writes.emplace_back();
+    w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    w.dstSet = set;
+    w.dstBinding = binding;
+    w.descriptorCount = 1;
+    w.descriptorType = type;
+    w.pImageInfo = &infos.back();
+  };
+  for (uint32_t i = 0; i < 2; i++) {
+    const VkDescriptorSet set = x.sets[i];
+    auto image_info = [&](VkImageView view, VkImageLayout layout = kGeneral) {
+      return VkDescriptorImageInfo{VK_NULL_HANDLE, view, layout};
+    };
+    write(set, 1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, image_info(x.ao_depth.view));
+    write(set, 2, VK_DESCRIPTOR_TYPE_SAMPLER, {x.sampler, VK_NULL_HANDLE, kGeneral});
+    for (uint32_t mip = 0; mip < XeGtao::kDepthMips; mip++) {
+      write(set, 3 + mip, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, image_info(x.depth_mip_views[mip]));
+    }
+    write(set, 8, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, image_info(x.depth.view));
+    write(set, 9, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, image_info(x.normals.view));
+    write(set, 10, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, image_info(x.normals.view));
+    write(set, 11, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, image_info(x.ao[0].view));
+    write(set, 12, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, image_info(x.edges.view));
+    write(set, 13, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, image_info(x.ao[i].view));
+    write(set, 14, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, image_info(x.edges.view));
+    write(set, 15, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, image_info(x.ao[1 - i].view));
+    write(x.debug_sets[i], 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+          {resolve_sampler, x.history[i].view, kGeneral});
+    write(x.debug_sets[i], 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+          {resolve_sampler, x.normals.view, kGeneral});
+    write(x.debug_sets[i], 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+          {resolve_sampler, x.edges.view, kGeneral});
+    for (uint32_t j = 0; j < 2; j++) {
+      const VkDescriptorSet set = x.temporal_sets[i][j];
+      constexpr VkDescriptorType kCombined = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+      constexpr VkImageLayout kRead = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      write(set, 0, kCombined, {resolve_sampler, x.ao[i].view, kGeneral});
+      write(set, 1, kCombined, {resolve_sampler, gbuffer.velocity.view, kRead});
+      write(set, 2, kCombined, {resolve_sampler, gbuffer.depth.view, kRead});
+      write(set, 3, kCombined, {resolve_sampler, x.history[j].view, kGeneral});
+      write(set, 4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            {VK_NULL_HANDLE, x.history[1 - j].view, kGeneral});
+      write(set, 5, kCombined, {resolve_sampler, x.no_ao.view, kGeneral});
+    }
+  }
+  vk::vkUpdateDescriptorSets(device, uint32_t(writes.size()), writes.data(), 0, nullptr);
+
+  struct Kernel {
+    const uint32_t* code;
+    size_t size;
+  };
+  const Kernel kernels[8] = {
+      {k_xegtao_prefilter_depths, sizeof(k_xegtao_prefilter_depths)},
+      {k_xegtao_generate_normals, sizeof(k_xegtao_generate_normals)},
+      {k_xegtao_main_low, sizeof(k_xegtao_main_low)},
+      {k_xegtao_main_medium, sizeof(k_xegtao_main_medium)},
+      {k_xegtao_main_high, sizeof(k_xegtao_main_high)},
+      {k_xegtao_main_ultra, sizeof(k_xegtao_main_ultra)},
+      {k_xegtao_denoise, sizeof(k_xegtao_denoise)},
+      {k_xegtao_denoise_last, sizeof(k_xegtao_denoise_last)}};
+  for (uint32_t i = 0; i < 8; i++) {
+    VkShaderModuleCreateInfo module_info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    module_info.codeSize = kernels[i].size;
+    module_info.pCode = kernels[i].code;
+    VkShaderModule module;
+    if (vk::vkCreateShaderModule(device, &module_info, nullptr, &module) != VK_SUCCESS) {
+      return false;
+    }
+    VkComputePipelineCreateInfo info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    info.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    info.stage.module = module;
+    info.stage.pName = "main";
+    info.layout = x.layout;
+    VkResult result = vk::vkCreateComputePipelines(device, pipeline_cache, 1, &info, nullptr,
+                                                   &x.pipelines[i]);
+    vk::vkDestroyShaderModule(device, module, nullptr);
+    if (result != VK_SUCCESS) {
+      x.pipelines[i] = VK_NULL_HANDLE;
+      return false;
+    }
+  }
+  auto module = [&](const uint32_t* code, size_t size, VkShaderModule& out) {
+    VkShaderModuleCreateInfo info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    info.codeSize = size;
+    info.pCode = code;
+    return vk::vkCreateShaderModule(device, &info, nullptr, &out) == VK_SUCCESS;
+  };
+  auto compute = [&](const uint32_t* code, size_t size, VkPipelineLayout layout,
+                     VkPipeline& out) {
+    VkShaderModule compute_module;
+    if (!module(code, size, compute_module)) {
+      return false;
+    }
+    VkComputePipelineCreateInfo info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    info.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    info.stage.module = compute_module;
+    info.stage.pName = "main";
+    info.layout = layout;
+    VkResult result =
+        vk::vkCreateComputePipelines(device, pipeline_cache, 1, &info, nullptr, &out);
+    vk::vkDestroyShaderModule(device, compute_module, nullptr);
+    if (result != VK_SUCCESS) {
+      out = VK_NULL_HANDLE;
+      return false;
+    }
+    return true;
+  };
+  if (!compute(k_xegtao_temporal_comp, sizeof(k_xegtao_temporal_comp), x.temporal_layout,
+               x.temporal_pipeline)) {
+    return false;
+  }
+  // The normals merge: the normals target (sampled, fetched), ours and the
+  // view-space depth's MIP 0 (storage), 64 bytes
+  // (glsl/xegtao/xegtao_normals.comp). Its sets are made when a normals
+  // target is first merged.
+  VkDescriptorSetLayoutBinding merge_bindings[3] = {
+      {0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+      {1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+      {2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+  set_info.bindingCount = 3;
+  set_info.pBindings = merge_bindings;
+  if (vk::vkCreateDescriptorSetLayout(device, &set_info, nullptr, &x.merge_set_layout) !=
+      VK_SUCCESS) {
+    return false;
+  }
+  VkPushConstantRange merge_push{VK_SHADER_STAGE_COMPUTE_BIT, 0, 64};
+  layout_info.pSetLayouts = &x.merge_set_layout;
+  layout_info.pPushConstantRanges = &merge_push;
+  if (vk::vkCreatePipelineLayout(device, &layout_info, nullptr, &x.merge_layout) != VK_SUCCESS) {
+    return false;
+  }
+  VkDescriptorPoolSize merge_sizes[2] = {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 4},
+                                         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 8}};
+  VkDescriptorPoolCreateInfo merge_pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+  merge_pool_info.maxSets = 4;
+  merge_pool_info.poolSizeCount = 2;
+  merge_pool_info.pPoolSizes = merge_sizes;
+  if (vk::vkCreateDescriptorPool(device, &merge_pool_info, nullptr, &x.merge_pool) !=
+          VK_SUCCESS ||
+      !compute(k_xegtao_normals_comp, sizeof(k_xegtao_normals_comp), x.merge_layout,
+               x.merge_pipeline) ||
+      !compute(k_xegtao_normals_ms_comp, sizeof(k_xegtao_normals_ms_comp), x.merge_layout,
+               x.merge_pipeline_ms)) {
+    return false;
+  }
+  // The AO's depth: the G-buffer's depth and the normals target (sampled,
+  // fetched), the result (storage), 8 bytes (XeGTAO's DepthUnpackConsts;
+  // glsl/xegtao/xegtao_depth.comp). Its sets are made by normals target.
+  VkDescriptorSetLayoutBinding depth_bindings[4] = {
+      {0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+      {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+      {2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+      {3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+  set_info.bindingCount = 4;
+  set_info.pBindings = depth_bindings;
+  if (vk::vkCreateDescriptorSetLayout(device, &set_info, nullptr, &x.depth_set_layout) !=
+      VK_SUCCESS) {
+    return false;
+  }
+  VkPushConstantRange depth_push{VK_SHADER_STAGE_COMPUTE_BIT, 0, 8};
+  layout_info.pSetLayouts = &x.depth_set_layout;
+  layout_info.pPushConstantRanges = &depth_push;
+  if (vk::vkCreatePipelineLayout(device, &layout_info, nullptr, &x.depth_layout) != VK_SUCCESS) {
+    return false;
+  }
+  VkDescriptorPoolSize depth_sizes[2] = {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 10},
+                                         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 10}};
+  VkDescriptorPoolCreateInfo depth_pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+  depth_pool_info.maxSets = 5;
+  depth_pool_info.poolSizeCount = 2;
+  depth_pool_info.pPoolSizes = depth_sizes;
+  if (vk::vkCreateDescriptorPool(device, &depth_pool_info, nullptr, &x.depth_pool) !=
+          VK_SUCCESS ||
+      !compute(k_xegtao_depth_comp, sizeof(k_xegtao_depth_comp), x.depth_layout,
+               x.depth_pipeline) ||
+      !compute(k_xegtao_depth_normals_comp, sizeof(k_xegtao_depth_normals_comp),
+               x.depth_layout, x.depth_pipeline_normals) ||
+      !compute(k_xegtao_depth_normals_ms_comp, sizeof(k_xegtao_depth_normals_ms_comp),
+               x.depth_layout, x.depth_pipeline_normals_ms)) {
+    return false;
+  }
+  // The apply: the history and the light target (or a black texel), 4
+  // bytes (the strength). Its sets are made per history and light target.
+  VkDescriptorSetLayoutBinding apply_bindings[2] = {
+      {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+      {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
+  set_info.bindingCount = 2;
+  set_info.pBindings = apply_bindings;
+  if (vk::vkCreateDescriptorSetLayout(device, &set_info, nullptr, &x.apply_set_layout) !=
+      VK_SUCCESS) {
+    return false;
+  }
+  VkPushConstantRange apply_push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, 4};
+  layout_info.pSetLayouts = &x.apply_set_layout;
+  layout_info.pPushConstantRanges = &apply_push;
+  if (vk::vkCreatePipelineLayout(device, &layout_info, nullptr, &x.apply_layout) != VK_SUCCESS) {
+    return false;
+  }
+  VkDescriptorPoolSize apply_size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 * 8};
+  VkDescriptorPoolCreateInfo apply_pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+  apply_pool_info.maxSets = 8;
+  apply_pool_info.poolSizeCount = 1;
+  apply_pool_info.pPoolSizes = &apply_size;
+  if (vk::vkCreateDescriptorPool(device, &apply_pool_info, nullptr, &x.apply_pool) !=
+      VK_SUCCESS) {
+    return false;
+  }
+  return module(k_xegtao_apply_frag, sizeof(k_xegtao_apply_frag), x.apply_pixel) &&
+         module(k_xegtao_apply_ms_frag, sizeof(k_xegtao_apply_ms_frag), x.apply_pixel_ms) &&
+         module(k_xegtao_debug_frag, sizeof(k_xegtao_debug_frag), x.debug_pixel);
+}
+
+void Passes::State::ApplyXeGTAO(VkCommandBuffer commands, Target& main, ViewKind view) {
+  XeGtao& x = xegtaos[view];
+  const GBuffer& g = gbuffers[view];
+  const char* name = kViewNames[view];
+  if (x.applied_frame == frame_serial) {
+    return;  // once a frame
+  }
+  if (!g.ready || g.built_frame != frame_serial) {
+    if (!x.logged_no_gbuffer) {
+      x.logged_no_gbuffer = true;
+      ITC_LOG_INFO("native renderer: xegtao: a {} frame without its G-buffer (see its log "
+                   "lines); skipped until one has it",
+                   name);
+    }
+    return;
+  }
+  if (!x.tried) {
+    x.tried = true;
+    x.ready = CreateXeGTAOResources(view, g.extent);
+    if (x.ready) {
+      ITC_LOG_INFO("native renderer: xegtao: ambient occlusion ({}x{}) on the {}",
+                   g.extent.width, g.extent.height, name);
+    } else {
+      ITC_LOG_ERROR("native renderer: xegtao: couldn't create the {}'s resources; off there",
+                    name);
+    }
+  }
+  if (!x.ready || g.extent.width != x.extent.width || g.extent.height != x.extent.height) {
+    return;
+  }
+  const uint32_t w = x.extent.width, h = x.extent.height;
+  XeGTAO::GTAOSettings settings;
+  settings.QualityLevel = x.quality;
+  settings.DenoisePasses = x.denoise;
+  settings.Radius = x.radius;
+  XeGTAO::GTAOConstants constants{};
+  // The game's projection is row-vector (D3D style), stored row by row.
+  XeGTAO::GTAOUpdateConstants(constants, int(w), int(h), settings, g.projection, true, 0);
+  static_assert(sizeof(constants) == 96);
+  // With the history, the noise moves each frame (over 64), so it averages
+  // out there; without, it stays put.
+  const bool temporal = x.temporal < 1.0f;
+  constants.NoiseIndex = temporal ? int32_t(x.noise_frame++ % 64) : 0;
+  constants.Padding0 = x.plane_bias;  // unused by XeGTAO; our plane bias
+  // Last frame's history is there only if it ran in the frame just before.
+  const bool has_history = temporal && x.history_frame != 0 &&
+                           x.history_frame + 1 == frame_serial;
+
+  EndRendering(commands);
+  if (!x.layouts_set) {
+    x.layouts_set = true;
+    Image* images[9] = {&x.depth,       &x.normals,  &x.edges,
+                        &x.ao[0],       &x.ao[1],    &x.history[0],
+                        &x.history[1],  &x.ao_depth, &x.no_ao};
+    for (Image* image : images) {
+      VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+      Transition(commands, image->image, VK_IMAGE_ASPECT_COLOR_BIT, layout,
+                 VK_IMAGE_LAYOUT_GENERAL);
+    }
+  }
+  // Between kernels: their image writes visible to the next one's reads.
+  auto barrier = [&] {
+    VkMemoryBarrier memory{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    memory.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    memory.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    vk::vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &memory, 0, nullptr, 0,
+                             nullptr);
+  };
+  auto bind = [&](uint32_t set) {
+    vk::vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE, x.layout, 0, 1,
+                                &x.sets[set], 0, nullptr);
+  };
+  // The AO's depth first: the normals target's view distances over the
+  // G-buffer's depth (glsl/xegtao/xegtao_depth.comp).
+  {
+    NormalsTarget* targets = NormalsFor(&main);
+    const VkImageView key = targets ? targets->image.view : VK_NULL_HANDLE;
+    auto [it, added] = x.depth_sets.try_emplace(key, VK_NULL_HANDLE);
+    if (added) {
+      VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+      alloc.descriptorPool = x.depth_pool;
+      alloc.descriptorSetCount = 1;
+      alloc.pSetLayouts = &x.depth_set_layout;
+      if (vk::vkAllocateDescriptorSets(context.device, &alloc, &it->second) != VK_SUCCESS) {
+        it->second = VK_NULL_HANDLE;
+        ITC_LOG_ERROR("native renderer: xegtao: no depth descriptor set for the {}", name);
+      } else {
+        VkDescriptorImageInfo images[4] = {
+            {VK_NULL_HANDLE, g.depth.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+            {VK_NULL_HANDLE, key, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+            {VK_NULL_HANDLE, x.ao_depth.view, VK_IMAGE_LAYOUT_GENERAL},
+            {VK_NULL_HANDLE, x.no_ao.view, VK_IMAGE_LAYOUT_GENERAL}};
+        VkWriteDescriptorSet writes[4];
+        uint32_t count = 0;
+        for (uint32_t i = 0; i < 4; i++) {
+          if (i == 1 && key == VK_NULL_HANDLE) {
+            continue;  // not read without a normals target
+          }
+          VkWriteDescriptorSet& w = writes[count++];
+          w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+          w.dstSet = it->second;
+          w.dstBinding = i;
+          w.descriptorCount = 1;
+          w.descriptorType =
+              i >= 2 ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+          w.pImageInfo = &images[i];
+        }
+        vk::vkUpdateDescriptorSets(context.device, count, writes, 0, nullptr);
+      }
+    }
+    VkPipeline pipeline = !targets ? x.depth_pipeline
+                          : targets->samples != VK_SAMPLE_COUNT_1_BIT
+                              ? x.depth_pipeline_normals_ms
+                              : x.depth_pipeline_normals;
+    if (it->second && pipeline) {
+      if (targets) {
+        Transition(commands, targets->image.image, VK_IMAGE_ASPECT_COLOR_BIT, targets->layout,
+                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+      }
+      const float unpack[2] = {constants.DepthUnpackConsts.x, constants.DepthUnpackConsts.y};
+      vk::vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+      vk::vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE, x.depth_layout, 0,
+                                  1, &it->second, 0, nullptr);
+      vk::vkCmdPushConstants(commands, x.depth_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                             sizeof(unpack), unpack);
+      vk::vkCmdDispatch(commands, (w + 7) / 8, (h + 7) / 8, 1);
+      barrier();
+    }
+  }
+  bind(0);
+  vk::vkCmdPushConstants(commands, x.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(constants),
+                         &constants);
+  constexpr uint32_t kGroup = XE_GTAO_NUMTHREADS_X;  // 8x8 threads
+  static_assert(XE_GTAO_NUMTHREADS_X == XE_GTAO_NUMTHREADS_Y);
+  // The depth and its MIPs: 2x2 pixels a thread.
+  vk::vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, x.pipelines[0]);
+  vk::vkCmdDispatch(commands, (w + 15) / 16, (h + 15) / 16, 1);
+  // The normals, from the G-buffer's depth (no barrier needed before it).
+  vk::vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, x.pipelines[1]);
+  vk::vkCmdDispatch(commands, (w + kGroup - 1) / kGroup, (h + kGroup - 1) / kGroup, 1);
+  barrier();
+  // The materials' smooth normals over them, where they wrote one.
+  if (NormalsTarget* normals = NormalsFor(&main)) {
+    if (MergeNormals(commands, view, *normals, w, h, constants.CameraTanHalfFOV.x,
+                     constants.CameraTanHalfFOV.y)) {
+      barrier();
+      // Its own set and constants were bound: XeGTAO's again.
+      bind(0);
+      vk::vkCmdPushConstants(commands, x.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                             sizeof(constants), &constants);
+    }
+  }
+  vk::vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, x.pipelines[2 + x.quality]);
+  vk::vkCmdDispatch(commands, (w + kGroup - 1) / kGroup, (h + kGroup - 1) / kGroup, 1);
+  barrier();
+  // Without denoising, one pass still writes the final term (as the sample).
+  const uint32_t passes = uint32_t(std::max(x.denoise, 1));
+  for (uint32_t pass = 0; pass < passes; pass++) {
+    bind(pass % 2);  // reads ao[pass % 2], writes the other
+    vk::vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          x.pipelines[pass + 1 == passes ? 7 : 6]);
+    vk::vkCmdDispatch(commands, (w + 2 * kGroup - 1) / (2 * kGroup), (h + kGroup - 1) / kGroup,
+                      1);
+    barrier();
+  }
+  x.final_ao = passes % 2;
+  // The history: the final term blended into last frame's.
+  const uint32_t read = x.history_read, written = 1 - read;
+  vk::vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, x.temporal_pipeline);
+  vk::vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE, x.temporal_layout, 0, 1,
+                              &x.temporal_sets[x.final_ao][read], 0, nullptr);
+  struct {
+    float current_weight;
+    float depth_tolerance;
+    int32_t has_history;
+  } temporal_constants{temporal ? std::max(x.temporal, 0.01f) : 1.0f,
+                       XeGtao::kHistoryDepthTolerance, has_history ? 1 : 0};
+  static_assert(sizeof(temporal_constants) == 12);
+  vk::vkCmdPushConstants(commands, x.temporal_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                         sizeof(temporal_constants), &temporal_constants);
+  vk::vkCmdDispatch(commands, (w + kGroup - 1) / kGroup, (h + kGroup - 1) / kGroup, 1);
+  x.history_read = written;
+  x.history_frame = frame_serial;
+  // The history to the apply's pixel shader, and the main view's earlier
+  // drawing done before it's blended into.
+  VkMemoryBarrier memory{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+  memory.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  memory.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  vk::vkCmdPipelineBarrier(
+      commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 1,
+      &memory, 0, nullptr, 0, nullptr);
+
+  // Into every sample, under the light target's light: color * ao + light *
+  // (1 - ao), as the light times (1 - ao) plus the color times ao (the
+  // output's alpha), the color's alpha kept.
+  NormalsTarget* targets = NormalsFor(&main);
+  VkImageView light_view = VK_NULL_HANDLE;
+  bool light_multisampled = false;
+  if (targets) {
+    Transition(commands, targets->light.image, VK_IMAGE_ASPECT_COLOR_BIT, targets->light_layout,
+               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    light_view = targets->light.view;
+    light_multisampled = targets->samples != VK_SAMPLE_COUNT_1_BIT;
+  } else {
+    if (!no_light_ready) {
+      no_light_ready = MakeNoLight(commands);
+    }
+    light_view = no_light_ready ? no_light.view : VK_NULL_HANDLE;
+  }
+  auto [it, added] = x.apply_pipelines.try_emplace(
+      {main.format, main.samples, light_multisampled}, VK_NULL_HANDLE);
+  if (added) {
+    VkPipelineColorBlendAttachmentState blend{};
+    blend.blendEnable = VK_TRUE;
+    blend.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    blend.dstColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    blend.colorBlendOp = VK_BLEND_OP_ADD;
+    blend.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    blend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blend.alphaBlendOp = VK_BLEND_OP_ADD;
+    blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                           VK_COLOR_COMPONENT_B_BIT;
+    it->second = MakeFullscreenPipeline(light_multisampled ? x.apply_pixel_ms : x.apply_pixel,
+                                        x.apply_layout, main.format, main.samples, 1, nullptr,
+                                        &blend);
+    if (!it->second) {
+      ITC_LOG_ERROR("native renderer: xegtao: couldn't create the apply pipeline for format {}",
+                    int(main.format));
+    }
+  }
+  VkDescriptorSet apply_set = VK_NULL_HANDLE;
+  if (light_view) {
+    auto [set_it, set_added] =
+        x.apply_light_sets.try_emplace({written, light_view}, VK_NULL_HANDLE);
+    if (set_added) {
+      VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+      alloc.descriptorPool = x.apply_pool;
+      alloc.descriptorSetCount = 1;
+      alloc.pSetLayouts = &x.apply_set_layout;
+      if (vk::vkAllocateDescriptorSets(context.device, &alloc, &set_it->second) == VK_SUCCESS) {
+        VkDescriptorImageInfo images[2] = {
+            {resolve_sampler, x.history[written].view, VK_IMAGE_LAYOUT_GENERAL},
+            {resolve_sampler, light_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.dstSet = set_it->second;
+        write.descriptorCount = 2;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = images;
+        vk::vkUpdateDescriptorSets(context.device, 1, &write, 0, nullptr);
+      } else {
+        set_it->second = VK_NULL_HANDLE;
+        ITC_LOG_ERROR("native renderer: xegtao: no descriptor set for the {}'s apply", name);
+      }
+    }
+    apply_set = set_it->second;
+  }
+  if (it->second && apply_set && x.strength > 0) {
+    const VkExtent2D extent{std::min(w, main.extent.width), std::min(h, main.extent.height)};
+    DrawIntoMainView(commands, main, extent, it->second, apply_set, &x.strength,
+                     sizeof(x.strength), x.apply_layout);
+  }
+  x.applied_frame = frame_serial;
+}
+
+bool Passes::State::MergeNormals(VkCommandBuffer commands, ViewKind view,
+                                 NormalsTarget& normals, uint32_t w, uint32_t h,
+                                 float tan_half_x, float tan_half_y) {
+  XeGtao& x = xegtaos[view];
+  const GBuffer& g = gbuffers[view];
+  auto [it, added] = x.merge_sets.try_emplace(normals.image.view, VK_NULL_HANDLE);
+  if (added) {
+    VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    alloc.descriptorPool = x.merge_pool;
+    alloc.descriptorSetCount = 1;
+    alloc.pSetLayouts = &x.merge_set_layout;
+    if (vk::vkAllocateDescriptorSets(context.device, &alloc, &it->second) != VK_SUCCESS) {
+      it->second = VK_NULL_HANDLE;
+      ITC_LOG_ERROR("native renderer: xegtao: no descriptor set for the {}'s normals target",
+                    kViewNames[view]);
+    } else {
+      VkDescriptorImageInfo images[3] = {
+          {VK_NULL_HANDLE, normals.image.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+          {VK_NULL_HANDLE, x.normals.view, VK_IMAGE_LAYOUT_GENERAL},
+          {VK_NULL_HANDLE, x.depth_mip_views[0], VK_IMAGE_LAYOUT_GENERAL}};
+      VkWriteDescriptorSet writes[3];
+      for (uint32_t i = 0; i < 3; i++) {
+        writes[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        writes[i].dstSet = it->second;
+        writes[i].dstBinding = i;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType =
+            i == 0 ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writes[i].pImageInfo = &images[i];
+      }
+      vk::vkUpdateDescriptorSets(context.device, 3, writes, 0, nullptr);
+    }
+  }
+  const bool multisampled = normals.samples != VK_SAMPLE_COUNT_1_BIT;
+  VkPipeline pipeline = multisampled ? x.merge_pipeline_ms : x.merge_pipeline;
+  if (!it->second || !pipeline) {
+    return false;
+  }
+  if (!x.logged_normals) {
+    x.logged_normals = true;
+    ITC_LOG_INFO("native renderer: xegtao: the {}'s materials' normals ({} samples) merged over "
+                 "the ones from depth",
+                 kViewNames[view], int(normals.samples));
+  }
+  Transition(commands, normals.image.image, VK_IMAGE_ASPECT_COLOR_BIT, normals.layout,
+             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  // World space to XeGTAO's view space: the game's view (row vectors, so
+  // column j of its rotation gives view axis j), with z turned to point
+  // away from the eye if the projection looks down -z (w = -z there).
+  struct {
+    float rows[3][4];
+    float tan_half[2];
+    float pixel_size[2];
+  } c{};
+  static_assert(sizeof(c) == 64);
+  const float z_sign = g.projection[2 * 4 + 3] < 0.0f ? -1.0f : 1.0f;
+  for (int j = 0; j < 3; j++) {
+    for (int i = 0; i < 3; i++) {
+      c.rows[j][i] = g.view[i * 4 + j] * (j == 2 ? z_sign : 1.0f);
+    }
+  }
+  c.tan_half[0] = tan_half_x;
+  c.tan_half[1] = tan_half_y;
+  c.pixel_size[0] = 1.0f / float(w);
+  c.pixel_size[1] = 1.0f / float(h);
+  vk::vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+  vk::vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE, x.merge_layout, 0, 1,
+                              &it->second, 0, nullptr);
+  vk::vkCmdPushConstants(commands, x.merge_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(c),
+                         &c);
+  vk::vkCmdDispatch(commands, (w + 7) / 8, (h + 7) / 8, 1);
+  return true;
+}
+
+Passes::State::NormalsTarget* Passes::State::NormalsFor(const Target* color) {
+  if (!color || color->depth) {
+    return nullptr;
+  }
+  const ViewKind view = ViewOf(*color);
+  if (view == kViewKinds || !xegtaos[view].enabled || !xegtaos[view].material_normals) {
+    return nullptr;
+  }
+  auto [it, added] = normals_targets.try_emplace(color);
+  NormalsTarget& n = it->second;
+  if (added) {
+    n.samples = color->samples;
+    const VkExtent3D size{color->extent.width, color->extent.height, 1};
+    constexpr VkImageUsageFlags kUsage =
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    n.ready = CreateImage(n.image, VK_IMAGE_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D, kNormalsFormat, size,
+                          1, kUsage, VK_IMAGE_ASPECT_COLOR_BIT, 0, color->samples) &&
+              CreateImage(n.light, VK_IMAGE_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D, kLightFormat, size,
+                          1, kUsage, VK_IMAGE_ASPECT_COLOR_BIT, 0, color->samples);
+    if (n.ready) {
+      ITC_LOG_INFO("native renderer: xegtao: view targets for the {} ({}x{}, {} samples)",
+                   kViewNames[view], color->extent.width, color->extent.height,
+                   int(color->samples));
+    } else {
+      ITC_LOG_ERROR("native renderer: xegtao: couldn't make the {}'s view targets",
+                    kViewNames[view]);
+    }
+  }
+  return n.ready ? &n : nullptr;
+}
+
+const Passes::State::ShaderInfo& Passes::State::InfoOf(const TranslatedShader& shader) {
+  auto [it, added] = shader_infos.try_emplace(&shader);
+  ShaderInfo& info = it->second;
+  // The ports only: a translated shader's locations 1 and 2 are the game's
+  // other render targets (and the 3D views are drawn with one).
+  if (!added || shader.port_hash == 0 || (shader.writes_color_targets & 6)) {
+    return info;
+  }
+  // From the SPIR-V: Output variables' locations (OpDecorate (71) id
+  // Location (30) n; OpVariable (59) type id storage class Output (3)), and
+  // the spec constants' ids (OpDecorate id SpecId (1) n) and defaults
+  // (OpSpecConstant (50) type id value; OpSpecConstantTrue (48)).
+  std::unordered_map<uint32_t, uint32_t> locations, spec_ids, spec_values;
+  std::unordered_set<uint32_t> outputs;
+  const std::vector<uint32_t>& words = shader.spirv;
+  for (size_t i = 5; i < words.size();) {
+    const uint32_t count = words[i] >> 16, op = words[i] & 0xFFFF;
+    if (count == 0 || i + count > words.size()) {
+      break;
+    }
+    if (op == 71 && count >= 4 && words[i + 2] == 30) {
+      locations[words[i + 1]] = words[i + 3];
+    } else if (op == 71 && count >= 4 && words[i + 2] == 1) {
+      spec_ids[words[i + 3]] = words[i + 1];
+    } else if (op == 59 && count >= 4 && words[i + 3] == 3) {
+      outputs.insert(words[i + 2]);
+    } else if (op == 50 && count >= 4) {
+      spec_values[words[i + 2]] = words[i + 3];
+    }
+    i += count;
+  }
+  for (const auto& [id, location] : locations) {
+    if (outputs.count(id)) {
+      info.writes_normal |= location == 1;
+      info.writes_light |= location == 2;
+    }
+  }
+  info.writes_light &= spec_ids.count(900) != 0;
+  if (auto family = spec_ids.find(901); family != spec_ids.end()) {
+    if (auto value = spec_values.find(family->second); value != spec_values.end() &&
+                                                       value->second <= kModelGlass) {
+      info.family = ShaderFamily(value->second);
+    }
+  }
+  return info;
+}
+
+void Passes::State::XeGTAOAtResolve(VkCommandBuffer commands, uint8_t* base, uint32_t device,
+                                    Target& main, ViewKind view) {
+  BuildGBuffer(commands, base, device, view);
+  ApplyXeGTAO(commands, main, view);
+}
+
+bool Passes::State::MakeNoLight(VkCommandBuffer commands) {
+  if (!CreateImage(no_light, VK_IMAGE_TYPE_2D, VK_IMAGE_VIEW_TYPE_2D, kLightFormat, {1, 1, 1}, 1,
+                   VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                   VK_IMAGE_ASPECT_COLOR_BIT)) {
+    return false;
+  }
+  EndRendering(commands);
+  VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+  Transition(commands, no_light.image, VK_IMAGE_ASPECT_COLOR_BIT, layout,
+             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+  VkClearColorValue black{};
+  VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  vk::vkCmdClearColorImage(commands, no_light.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black,
+                           1, &range);
+  Transition(commands, no_light.image, VK_IMAGE_ASPECT_COLOR_BIT, layout,
+             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  return true;
+}
+
+void Passes::State::DrawXeGTAODebug(VkCommandBuffer commands, Target& target, VkExtent2D extent) {
+  // The view's applied this frame.
+  XeGtao* applied = nullptr;
+  for (XeGtao& candidate : xegtaos) {
+    if (candidate.ready && candidate.applied_frame == frame_serial) {
+      applied = &candidate;
+      break;
+    }
+  }
+  if (!applied || applied->debug <= 0) {
+    return;
+  }
+  XeGtao& x = *applied;
+  auto [it, added] = x.debug_pipelines.try_emplace({target.format, target.samples},
+                                                   VK_NULL_HANDLE);
+  if (added) {
+    it->second = MakeFullscreenPipeline(x.debug_pixel, x.debug_layout, target.format,
+                                        target.samples);
+  }
+  if (!it->second) {
+    return;
+  }
+  EndRendering(commands);
+  Transition(commands, target.image.image, VK_IMAGE_ASPECT_COLOR_BIT, target.layout,
+             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+  VkRenderingAttachmentInfo attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+  attachment.imageView = target.image.view;
+  attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+  attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  VkRect2D area{{0, 0}, extent};
+  VkRenderingInfo info{VK_STRUCTURE_TYPE_RENDERING_INFO};
+  info.renderArea = area;
+  info.layerCount = 1;
+  info.colorAttachmentCount = 1;
+  info.pColorAttachments = &attachment;
+  vk::vkCmdBeginRendering(commands, &info);
+  VkViewport viewport{0.0f, 0.0f, float(extent.width), float(extent.height), 0.0f, 1.0f};
+  vk::vkCmdSetViewport(commands, 0, 1, &viewport);
+  vk::vkCmdSetScissor(commands, 0, 1, &area);
+  vk::vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, it->second);
+  vk::vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, x.debug_layout, 0, 1,
+                              &x.debug_sets[x.history_read], 0, nullptr);
+  struct {
+    float extent[2];
+    int32_t mode;
+  } constants{{float(extent.width), float(extent.height)}, x.debug};
+  static_assert(sizeof(constants) == 12);
+  vk::vkCmdPushConstants(commands, x.debug_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                         sizeof(constants), &constants);
+  vk::vkCmdDraw(commands, 3, 1, 0, 0);
+  vk::vkCmdEndRendering(commands);
+  recorded.valid = false;
+}
+
 VkPipeline Passes::State::GetResolvePipeline(VkFormat format, bool multisample) {
   auto [it, added] = resolve_pipelines.try_emplace({format, multisample}, VK_NULL_HANDLE);
   if (!added) {
@@ -3935,7 +5167,8 @@ VkPipeline Passes::State::GetResolvePipeline(VkFormat format, bool multisample) 
 
 VkPipeline Passes::State::MakeFullscreenPipeline(VkShaderModule pixel, VkPipelineLayout layout,
                                                  VkFormat format, VkSampleCountFlagBits samples,
-                                                 uint32_t count, const VkFormat* formats) {
+                                                 uint32_t count, const VkFormat* formats,
+                                                 const VkPipelineColorBlendAttachmentState* blending) {
   if (!formats) {
     formats = &format;
     count = 1;
@@ -3969,6 +5202,9 @@ VkPipeline Passes::State::MakeFullscreenPipeline(VkShaderModule pixel, VkPipelin
   for (VkPipelineColorBlendAttachmentState& attachment : attachments) {
     attachment = {};
     attachment.colorWriteMask = 0xF;
+    if (blending) {
+      attachment = *blending;
+    }
   }
   VkPipelineColorBlendStateCreateInfo blend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
   blend.attachmentCount = count;
@@ -4937,9 +6173,13 @@ void Passes::State::Draw(VkCommandBuffer commands, uint8_t* base, uint32_t devic
                 &regs.values[XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031],
                 sizeof(r.bool_loop_constants));
     for (uint32_t k = 0; k < 96; k++) {
+      const uint32_t w0 = regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + 2 * k];
+      const uint32_t w1 = regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + 2 * k + 1];
       if (vertex->vertex_fetch_constants[k >> 5] & (1u << (k & 31))) {
-        r.vertex_fetches.push_back({k, regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + 2 * k],
-                                    regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + 2 * k + 1]});
+        r.vertex_fetches.push_back({k, w0, w1});
+      } else if (k >= 88 && (w0 & 3) == 3 && (w1 & ~3u) != 0) {
+        // Type 3 (a vertex buffer) with a size.
+        r.unread_vertex_fetches.push_back({k, w0, w1});
       }
     }
     r.render_state = {regs.values[0x2200], regs.values[0x2201], regs.values[0x2202],
@@ -5155,6 +6395,37 @@ void Passes::State::Draw(VkCommandBuffer commands, uint8_t* base, uint32_t devic
     uint32_t scale_bits = uint32_t(0x3F800000 + (bias << 23));
     std::memcpy(&system.color_exp_bias[i], &scale_bits, 4);
   }
+  // --xegtao: draws that take no AO: the mirrors (the car's side mirrors,
+  // the interior mirror and the screen's rear-view box: they sample the
+  // rear-view mirror's resolved view), and opaque draws without the depth
+  // test (the sky: in a 3D view, drawn first, behind everything). They
+  // write the normals target with no normal and only the sign bit for a
+  // view distance (kXeFlagSbxNoAo, bit 30 of the flags, past the
+  // translator's; xe_normal_distance in xe_interface.glsl), so the AO's
+  // depth there is the game's, and xegtao_depth.comp marks them in the
+  // no-AO mask; the history is 1 there (xegtao_temporal.comp).
+  static_assert(Translator::kSysFlag_Count <= 30);
+  bool no_ao = false;
+  if (s.mirror_texture && pixel) {
+    for (const ShaderTexture& texture : pixel->textures) {
+      const uint32_t word =
+          regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + 6 * texture.fetch_constant + 1];
+      if (GpuPhysicalAddress(word & 0xFFFFF000u) == s.mirror_texture) {
+        no_ao = true;
+        break;
+      }
+    }
+  }
+  {
+    // RB_DEPTHCONTROL (0x2200) bit 1: the depth test; RB_BLENDCONTROL0
+    // (0x2201) as ONE, ZERO, ADD for color and alpha: opaque.
+    const bool depth_tested = (regs.values[0x2200] & 2) != 0;
+    const bool opaque = (regs.values[0x2201] & 0x1FFF1FFF) == 0x00010001;
+    no_ao = no_ao || (!depth_tested && opaque);
+  }
+  if (no_ao) {
+    system.flags |= 1u << 30;
+  }
 
   // Constants into this frame's ring: system, vertex float, pixel float,
   // bool/loop, fetch. A block the same as the last one written points at it.
@@ -5300,12 +6571,81 @@ void Passes::State::Draw(VkCommandBuffer commands, uint8_t* base, uint32_t devic
   // without a pixel shader.)
   key.write_mask =
       draw_util::GetNormalizedColorMask(regs, pixel ? pixel->writes_color_targets : 0) & 0xF;
+  // The view targets, if this color target has them (BeginRendering
+  // attaches them; "View targets"): the normals target, by every
+  // depth-writing draw (blended or not) of the shaders that write it (every
+  // hand-written one: its view distance, and the materials' normal), so its
+  // distances are the depth's, which the AO's depth takes
+  // (xegtao_depth.comp); but not the glass (kModelGlass: the windows and
+  // light covers with a third texture coordinate, and the cockpit view's
+  // windshield overlay, 22811), so the AO looks through it, nor additive
+  // draws (light), nor the smooth-alpha solids, which write it in a copy of
+  // their own (below). The light, by every
+  // shader that writes it, with the color's write mask and blend. XE_LIGHT (key.light) for the draws that
+  // only add light: the models' unlit material, and additive blends.
+  const State::ShaderInfo* info = pixel ? &s.InfoOf(*pixel) : nullptr;
+  const bool adds = key.blend_enable && key.dst_color == VK_BLEND_FACTOR_ONE &&
+                    key.color_op == VK_BLEND_OP_ADD;
+  // The smooth-alpha solids: the models' lit and unlit, blended, not
+  // additive draws (the wheels, DXT5 alpha, the garage's with an alpha test
+  // and the type B models' without depth writes; unlit ones such as the
+  // cockpit's "cover glow" over the windshield, only as solid as their
+  // alpha; glow planes, alpha 0, never)
+  // write the normals target in a copy drawn first, color and depth off,
+  // whose alpha test is a dither (kXeFlagSbxDitheredAlpha, moved each frame): so they're
+  // in the AO's depth as often as their alpha, and the history blends their
+  // edges smoothly. Not the course's (decals), nor depth-biased or
+  // equal-tested draws (also decals), nor the glass.
+  bool depth_copy = false;
+  PipelineKey copy_key{};
+  if (s.NormalsFor(color)) {
+    const State::XeGtao& x = s.xegtaos[s.ViewOf(*color)];
+    key.normals = 1;
+    // Glass: the shaders the AO looks through (kModelGlass).
+    const bool glass = info && info->family == State::kModelGlass;
+    depth_copy = !glass && !no_ao && x.alpha_depth && info &&
+                 (info->family == State::kModelLit || info->family == State::kModelUnlit) &&
+                 info->writes_normal && key.blend_enable && !adds && key.write_mask != 0 &&
+                 key.z_enable && key.z_func != VK_COMPARE_OP_EQUAL;
+    // (And the opaque equal-tested draws: a second pass over depth already
+    // drawn, which may have come from a draw without a pixel shader.)
+    const bool sets_depth =
+        key.z_enable &&
+        (key.z_write || (key.z_func == VK_COMPARE_OP_EQUAL && !key.blend_enable));
+    key.normals_mask = info && info->writes_normal && (sets_depth || no_ao) && !adds && !glass &&
+                               !depth_copy
+                           ? 0xF
+                           : 0;
+    key.light_mask = info && info->writes_light ? key.write_mask : 0;
+    key.light = x.light && key.light_mask != 0 &&
+                (adds || info->family == State::kModelUnlit);
+  }
   if (!key.vertex || (pixel && !key.pixel) || !key.layout) {
     s.stats.failed++;
     return;
   }
+  if (depth_copy) {
+    copy_key = key;
+    copy_key.blend_enable = 0;
+    copy_key.src_color = copy_key.src_alpha = VK_BLEND_FACTOR_ONE;
+    copy_key.dst_color = copy_key.dst_alpha = VK_BLEND_FACTOR_ZERO;
+    copy_key.color_op = copy_key.alpha_op = VK_BLEND_OP_ADD;
+    copy_key.write_mask = 0;
+    copy_key.normals_mask = 0xF;
+    copy_key.light_mask = 0;
+    copy_key.light = 0;
+    copy_key.z_write = 0;
+    // Drawn before the draw itself: where that writes depth, the copy
+    // passes at the same depth.
+    if (copy_key.z_func == VK_COMPARE_OP_LESS) {
+      copy_key.z_func = VK_COMPARE_OP_LESS_OR_EQUAL;
+    } else if (copy_key.z_func == VK_COMPARE_OP_GREATER) {
+      copy_key.z_func = VK_COMPARE_OP_GREATER_OR_EQUAL;
+    }
+  }
   bool made = false;
   VkPipeline pipeline = s.GetPipeline(key, &made);
+  VkPipeline copy_pipeline = depth_copy ? s.GetPipeline(copy_key) : VK_NULL_HANDLE;
   if (made) {
     // Kept for the next session's warm-up.
     PipelineRecord record;
@@ -5503,6 +6843,44 @@ void Passes::State::Draw(VkCommandBuffer commands, uint8_t* base, uint32_t devic
     }
   }
   bool skip = s.skip_repeated_state;
+  // The smooth-alpha solids: the normals-target-only copy first (not for
+  // depth-biased draws: decals).
+  if (copy_pipeline && constant == 0.0f && slope == 0.0f) {
+    // Its alpha test a dither (xe_alpha_test_passes,
+    // kXeFlagSbxDitheredAlpha, bit 31: past the translator's flags), moved
+    // each frame by the reference.
+    static_assert(Translator::kSysFlag_Count <= 31);
+    Translator::SystemConstants copy_system = system;
+    copy_system.flags |= 1u << 31;
+    copy_system.alpha_test_reference = float(s.frame_serial % 64);
+    uint32_t copy_offsets[5];
+    std::copy(offsets, offsets + 5, copy_offsets);
+    if (s.PlaceConstants(0, &copy_system, sizeof(copy_system), sizeof(copy_system),
+                         copy_offsets[0])) {
+      vk::vkCmdSetViewport(commands, 0, 1, &viewport);
+      vk::vkCmdSetScissor(commands, 0, 1, &scissor_rect);
+      vk::vkCmdSetDepthBias(commands, constant, 0.0f, slope);
+      vk::vkCmdSetBlendConstants(commands, blend_constants);
+      vk::vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, copy_pipeline);
+      vk::vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, key.layout, 0, 4,
+                                  sets, 5, copy_offsets);
+      if (now.indexed) {
+        vk::vkCmdBindIndexBuffer(commands, now.index_buffer, now.index_offset, now.index_type);
+      }
+      if (rectangle_list) {
+        vk::vkCmdDrawIndexed(commands, RectangleIndexCount(index_count / 3), 1, first_index, 0,
+                             0);
+      } else if (quad_list) {
+        vk::vkCmdDrawIndexed(commands, index_count / 4 * 6, 1, first_index, 0, 0);
+      } else if (call.inline_vertices) {
+        vk::vkCmdDraw(commands, index_count, 1, 0, 0);
+      } else {
+        vk::vkCmdDrawIndexed(commands, index_count, 1, first_index, 0, 0);
+      }
+      s.recorded.valid = false;
+      skip = false;
+    }
+  }
   if (!(skip && repeated[0])) {
     vk::vkCmdSetViewport(commands, 0, 1, &viewport);
   }
@@ -5572,6 +6950,7 @@ VkPipeline Passes::State::GetIdPipeline(const IdDraw& draw) {
   key.blend_enable = key.src_color = key.dst_color = key.color_op = 0;
   key.src_alpha = key.dst_alpha = key.alpha_op = key.write_mask = 0;
   key.color_format = key.samples = 0;
+  key.normals = key.normals_mask = key.light_mask = key.light = 0;
   auto [it, added] = id_pipelines.try_emplace(key, VK_NULL_HANDLE);
   if (!added) {
     return it->second;
@@ -5875,6 +7254,11 @@ void Passes::State::Resolve(VkCommandBuffer commands, uint8_t* base, uint32_t de
   uint32_t depth_object = guest::LoadU32(base, device + kDeviceDepthStencil);
   uint32_t source_object = from_depth ? depth_object : color_object;
   Target* source = source_object ? GetTarget(commands, base, source_object, from_depth) : nullptr;
+  if (source && !from_depth && destination && source->surface.msaa == 2 &&
+      source->surface.pitch == kMirrorPitch) {
+    mirror_texture = GpuPhysicalAddress(guest::LoadU32(base, destination + 32) &
+                                        0xFFFFF000u);  // its fetch constant's word 1
+  }
   if (source && !from_depth && IsMainViewSurface(source->surface) &&
       source->format == VK_FORMAT_R16G16B16A16_SFLOAT) {
     // The main view's color: in a race, its first resolve is the opaque
@@ -5884,8 +7268,12 @@ void Passes::State::Resolve(VkCommandBuffer commands, uint8_t* base, uint32_t de
     // bloom, the motion blur and the combine all read the anti-aliased
     // scene.
     ++main_view_resolves;
-    if (gbuffer.enabled && main_view_resolves == gbuffer.at) {
-      BuildGBuffer(commands, base, device);
+    const GBuffer& race = gbuffers[kRaceView];
+    if ((race.enabled || xegtaos[kRaceView].enabled) && main_view_resolves == race.at) {
+      BuildGBuffer(commands, base, device, kRaceView);
+      if (xegtaos[kRaceView].enabled) {
+        XeGTAOAtResolve(commands, base, device, *source, kRaceView);
+      }
     }
     if (main_view_resolves == cmaa2_at) {
       // Its drawn part; HDR stored at 8x (the resolves' exponent bias -3).
@@ -5896,6 +7284,11 @@ void Passes::State::Resolve(VkCommandBuffer commands, uint8_t* base, uint32_t de
         ApplyFrameBlend(commands, *source);
       }
     }
+  }
+  // --xegtao_mirror: the rear-view mirror's view, at its resolve.
+  if (source && !from_depth && xegtaos[kMirrorView].enabled &&
+      ViewOf(*source) == kMirrorView) {
+    XeGTAOAtResolve(commands, base, device, *source, kMirrorView);
   }
   if (record_draws) {
     frame_dump::Resolve& r = dump_frame.resolves.emplace_back();
@@ -6026,6 +7419,14 @@ void Passes::TiledResolve(VkCommandBuffer commands, uint8_t* base, uint32_t devi
   // drawn whole here: anti-aliased once, before its first tile is resolved.
   // Its values are as the resolve's exponent bias leaves them (0 there:
   // unscaled), so they're tonemapped at that exposure.
+  // --xegtao on the menu view: there, if it hasn't run at a blended draw.
+  if (tile == 0 && !(flags & 4) && s.xegtaos[State::kMenuView].enabled) {
+    uint32_t object = guest::LoadU32(base, device + kDeviceRenderTarget0 + 4 * (flags & 3));
+    Target* source = object ? s.GetTarget(commands, base, object, false) : nullptr;
+    if (source && s.ViewOf(*source) == State::kMenuView) {
+      s.XeGTAOAtResolve(commands, base, device, *source, State::kMenuView);
+    }
+  }
   if (tile == 0 && !(flags & 4) && (s.cmaa2 || s.fxaa)) {
     uint32_t object = guest::LoadU32(base, device + kDeviceRenderTarget0 + 4 * (flags & 3));
     Target* source = object ? s.GetTarget(commands, base, object, false) : nullptr;
@@ -6167,12 +7568,28 @@ void Passes::set_anti_aliasing(bool cmaa2, bool fxaa, uint32_t at, bool debug,
 
 void Passes::set_gbuffer(bool enabled, uint32_t at, int32_t debug, float depth_range,
                          float velocity_scale) {
-  State::GBuffer& g = state_->gbuffer;
-  g.enabled = enabled;
-  g.at = std::max(at, 1u);
-  g.debug = enabled ? std::clamp(debug, 0, 4) : 0;
-  g.depth_range = depth_range > 0 ? depth_range : 500.0f;
-  g.velocity_scale = velocity_scale;
+  for (State::GBuffer& g : state_->gbuffers) {
+    g.enabled = enabled;
+    g.at = std::max(at, 1u);
+    // Also drawn when the G-buffer is built only for --xegtao.
+    g.debug = std::clamp(debug, 0, 4);
+    g.depth_range = depth_range > 0 ? depth_range : 500.0f;
+    g.velocity_scale = velocity_scale;
+  }
+}
+
+void Passes::set_xegtao(bool enabled, int32_t quality, int32_t denoise, float radius,
+                        float strength, int32_t debug, float temporal, bool mirror) {
+  for (uint32_t view = 0; view < State::kViewKinds; view++) {
+    State::XeGtao& x = state_->xegtaos[view];
+    x.temporal = std::clamp(temporal, 0.01f, 1.0f);
+    x.enabled = enabled && (view != State::kMirrorView || mirror);
+    x.quality = std::clamp(quality, 0, 3);
+    x.denoise = std::clamp(denoise, 0, 3);
+    x.radius = radius > 0 ? radius : 0.75f;
+    x.strength = std::clamp(strength, 0.0f, 1.0f);
+    x.debug = enabled ? std::clamp(debug, 0, 3) : 0;
+  }
 }
 
 void Passes::set_record_draws(bool record) {
@@ -6673,8 +8090,10 @@ VkExtent2D Passes::EndFrame(VkCommandBuffer commands, int32_t show_resolve, bool
     VkExtent2D front_extent = s.Scaled(s.front_extent);
     extent = {std::min({front_extent.width, front->extent.width, s.shown_extent.width}),
               std::min({front_extent.height, front->extent.height, s.shown_extent.height})};
-    // --gbuffer_debug: a G-buffer view drawn over the frame first.
+    // --gbuffer_debug and --xegtao_debug: their views drawn over the frame
+    // first.
     s.DrawGBufferDebug(commands, *front, extent);
+    s.DrawXeGTAODebug(commands, *front, extent);
     Transition(commands, front->image.image, front->aspects(), front->layout,
                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     if (front->samples == VK_SAMPLE_COUNT_1_BIT) {

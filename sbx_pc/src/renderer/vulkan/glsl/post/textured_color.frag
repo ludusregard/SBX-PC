@@ -4,7 +4,13 @@
 //                      (clamped to 0-1); otherwise it's the vertex alpha
 //   MINUS_ONE          the result less 1, clamped to 0-1
 //   PROJTEX_CLAMP      no negative colors when UseProjTex is set
+//   SBX_GLASS          glass for the renderer (passes.cpp, ShaderFamily 4:
+//                      the AO looks through it)
 #include "common.glsl"
+
+#ifdef SBX_GLASS
+layout(constant_id = 901) const int SBX_FAMILY = 4;
+#endif
 
 layout(location = UV_REG) in vec4 uv;
 layout(location = COLOR_REG) in vec4 v_color;

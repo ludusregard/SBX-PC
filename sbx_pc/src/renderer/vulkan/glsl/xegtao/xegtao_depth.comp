@@ -1,0 +1,56 @@
+#version 450
+#extension GL_EXT_samplerless_texture_functions : require
+// --xegtao (passes.cpp, ApplyXeGTAO): the depth XeGTAO works from, as raw
+// depth (0..1, what its prefilter unpacks). With the view targets, where the
+// normals target has a view distance (glsl/materials/normals_out.glsl: every
+// depth-writing draw of the hand-written shaders writes one, except the
+// glass, and the smooth-alpha solids write theirs dithered by their alpha),
+// that distance, packed back through XeGTAO's own unpacking; else the
+// G-buffer's depth. So the glass isn't in the AO's depth, and a smooth-alpha
+// edge is in it as often as its alpha (the history averages it). Sample 0
+// of a multisampled target (MULTISAMPLE), as the G-buffer takes its depth.
+// Without NORMALS, the G-buffer's depth as is.
+//   binding 0: the G-buffer's depth (rg32f: .r the depth as drawn)
+//   binding 1: the normals target (r32g32ui), with NORMALS
+//   binding 2: the result (r32f)
+//   binding 3: where no AO is applied (r8: 1 where the distance's sign bit
+//     is set, the mirrors and the sky, which write no distance, so the
+//     G-buffer's depth stays; xe_normal_distance in xe_interface.glsl)
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform texture2D gbuffer_depth;
+#ifdef NORMALS
+#ifdef MULTISAMPLE
+layout(set = 0, binding = 1) uniform utexture2DMS material_normals;
+#else
+layout(set = 0, binding = 1) uniform utexture2D material_normals;
+#endif
+#endif
+layout(set = 0, binding = 2, r32f) uniform writeonly image2D depth_out;
+layout(set = 0, binding = 3, r8) uniform writeonly image2D no_ao_out;
+
+layout(push_constant) uniform Constants {
+  vec2 depth_unpack;  // XeGTAO's DepthUnpackConsts: view z = x / (y - depth)
+} constants;
+
+void main() {
+  ivec2 position = ivec2(gl_GlobalInvocationID.xy);
+  if (any(greaterThanEqual(position, imageSize(depth_out)))) {
+    return;
+  }
+  float depth = texelFetch(gbuffer_depth, position, 0).r;
+  float no_ao = 0.0;
+#ifdef NORMALS
+  uint written = texelFetch(material_normals, position, 0).y;
+  if (written != 0u) {
+    no_ao = (written & 0x80000000u) != 0u ? 1.0 : 0.0;
+    float distance = uintBitsToFloat(written & 0x7FFFFFFFu);
+    if (distance > 0.0) {
+      depth = clamp(constants.depth_unpack.y - constants.depth_unpack.x / distance, 0.0, 1.0);
+    }
+  }
+#endif
+  imageStore(depth_out, position, vec4(depth));
+  imageStore(no_ao_out, position, vec4(no_ao));
+}

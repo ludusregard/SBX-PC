@@ -10,12 +10,24 @@
 
 namespace renderer {
 
-// The camera a command list was recorded with (camera pass 0's
-// view-projection, the game's row-vector matrix, row by row), for our own
-// passes that need it (--gbuffer). Not valid outside races.
+// The camera a command list was recorded with, for our own passes that need
+// it (--gbuffer, --xegtao): in a race camera pass 0's, in the menus the
+// camera pass their 3D scene (the garage stage, the parking area) updated.
+// Its view, projection and view-projection: the game's row-vector
+// matrices, row by row. Not valid without either.
 struct ListCamera {
   bool valid = false;
+  bool in_race = false;
+  float view[16] = {};
+  float projection[16] = {};
   float view_projection[16] = {};
+  // In a race, the rear-view mirror's camera pass (--xegtao_mirror): the
+  // pass whose perspective projection has the mirror's 4:1 aspect, the
+  // same three matrices. Not valid outside races or without one.
+  bool mirror_valid = false;
+  float mirror_view[16] = {};
+  float mirror_projection[16] = {};
+  float mirror_view_projection[16] = {};
 };
 
 // Main thread, as a pass's command list is handed to the render thread

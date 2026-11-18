@@ -26,9 +26,14 @@
 #include "renderer/renderer.h"
 #endif
 
+#include <fmt/format.h>
 #include <rex/cvar.h>
+#include <rex/logging.h>
 
+#include <cmath>
 #include <cstring>
+#include <set>
+#include <string>
 
 REXCVAR_DEFINE_BOOL(subtick, true, "SBX",
                     "Draw frames between the game's 30 Hz ticks (--max_fps), in races and the "
@@ -41,24 +46,82 @@ namespace {
 constexpr uint32_t kVideoOutputDeviceOffset = 140;
 
 #ifdef SBX_VULKAN_RENDERER
-// Camera pass 0's view-projection (docs/functions.md, "Known data": the
-// camera pass array at 0x826AA8E0, view-projection at +0x90).
-constexpr uint32_t kMainCameraViewProjection = 0x826AA8E0 + 0x90;
+// Camera pass 0 (docs/functions.md, "Known data": the camera pass array at
+// 0x826AA8E0; a pass's view at +0x10, projection at +0x50, view-projection
+// at +0x90).
+constexpr uint32_t kMainCamera = 0x826AA8E0;
+constexpr uint32_t kCameraView = 0x10;
+constexpr uint32_t kCameraProjection = 0x50;
+constexpr uint32_t kCameraViewProjection = 0x90;
+constexpr uint32_t kCameraPassSize = 592;
+constexpr uint32_t kCameraPasses = 21;
 
 // The camera the list just recorded was drawn with, for the native
-// renderer's own passes (--gbuffer). In a race only (the pass array holds the
-// race's camera then); with --subtick it's this frame's blended camera
-// (CarTransforms_RebuildCamera), still in place until CarTransforms_EndFrame.
+// renderer's own passes (--gbuffer, --xegtao). In a race, pass 0: with
+// --subtick it's this frame's blended camera (CarTransforms_RebuildCamera),
+// still in place until CarTransforms_EndFrame. In the menus, the camera pass
+// their 3D scene updated on this pass (CarTransforms_MenuSceneCamera; also
+// blended with --subtick).
 renderer::ListCamera CaptureListCamera(uint8_t* base) {
   renderer::ListCamera camera;
-  if (!subtick::GameMessages_InRace()) {
+  camera.in_race = subtick::GameMessages_InRace();
+  const uint32_t pass = camera.in_race ? kMainCamera : subtick::CarTransforms_MenuSceneCamera();
+  if (pass == 0) {
     return camera;
   }
-  for (uint32_t i = 0; i < 16; i++) {
-    uint32_t word = guest::LoadU32(base, kMainCameraViewProjection + 4 * i);
-    std::memcpy(&camera.view_projection[i], &word, 4);
-  }
+  auto read = [&](uint32_t offset, float* out) {
+    for (uint32_t i = 0; i < 16; i++) {
+      uint32_t word = guest::LoadU32(base, pass + offset + 4 * i);
+      std::memcpy(&out[i], &word, 4);
+    }
+  };
+  read(kCameraView, camera.view);
+  read(kCameraProjection, camera.projection);
+  read(kCameraViewProjection, camera.view_projection);
   camera.valid = true;
+  if (camera.in_race) {
+    // The rear-view mirror's pass: the game resolves the mirror's view at
+    // 512x128 (its 3D target: pitch 520, 4x MSAA; passes.cpp, kMirrorView),
+    // so the first pass after 0 with a perspective projection of that
+    // aspect (|P11 / P00| 4; P00 may be negative, a mirrored image). In
+    // John's race log (2026-11-17) that's pass 3; passes 1 and 2 are 16:9
+    // (3.56), 4 and on square.
+    // Each new set of candidates is logged (up to 8), to check it.
+    static std::set<std::string> logged_sets;
+    std::string candidates;
+    for (uint32_t index = 1; index < kCameraPasses; index++) {
+      const uint32_t address = kMainCamera + index * kCameraPassSize;
+      float projection[16];
+      for (uint32_t i = 0; i < 16; i++) {
+        uint32_t word = guest::LoadU32(base, address + kCameraProjection + 4 * i);
+        std::memcpy(&projection[i], &word, 4);
+      }
+      const bool perspective = std::fabs(std::fabs(projection[11]) - 1.0f) < 1e-3f &&
+                               std::fabs(projection[15]) < 1e-3f && projection[0] != 0.0f;
+      if (!perspective) {
+        continue;
+      }
+      const float aspect = std::fabs(projection[5] / projection[0]);
+      candidates += fmt::format(" {} (aspect {:.2f}, P00 {:.3f})", index, aspect, projection[0]);
+      if (!camera.mirror_valid && std::fabs(aspect - 4.0f) < 0.05f) {
+        camera.mirror_valid = true;
+        std::memcpy(camera.mirror_projection, projection, sizeof(projection));
+        auto read_pass = [&](uint32_t offset, float* out) {
+          for (uint32_t i = 0; i < 16; i++) {
+            uint32_t word = guest::LoadU32(base, address + offset + 4 * i);
+            std::memcpy(&out[i], &word, 4);
+          }
+        };
+        read_pass(kCameraView, camera.mirror_view);
+        read_pass(kCameraViewProjection, camera.mirror_view_projection);
+        candidates += " <- mirror";
+      }
+    }
+    if (logged_sets.size() < 8 && logged_sets.insert(candidates).second) {
+      REXLOG_INFO("race camera passes with a perspective projection:{}",
+                  candidates.empty() ? std::string(" none") : candidates);
+    }
+  }
   return camera;
 }
 #endif
