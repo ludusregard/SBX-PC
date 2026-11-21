@@ -33,8 +33,8 @@
 #include "renderer/renderer.h"
 #include "renderer/state.h"
 
-#include "base/flags.h"
 #include "base/log.h"
+#include "base/settings.h"
 
 #include <algorithm>
 #include <array>
@@ -48,14 +48,16 @@
 #include <string>
 #include <unordered_map>
 
-ITC_FLAG_BOOL(native_renderer_log_buffers, false, "SBX",
-              "Log the vertex and index buffer objects draws bind, and where their data "
-              "comes from (a debugging aid for the native renderer)");
-ITC_FLAG_DECLARE(bool, native_renderer_log_texture_writes);
-ITC_FLAG_BOOL(native_renderer_log_physical_writes, false, "SBX",
-              "Log memcpy's writes into the physical views by thread, pass and caller, and "
-              "whether they land in vertex or index data drawn around them (a debugging aid "
-              "for the native renderer)");
+#include <fmt/format.h>
+
+SBX_SETTING_BOOL(native_renderer_log_buffers, false, "Logging", "Native Renderer",
+                 "Log the vertex and index buffer objects draws bind, and where their data "
+                 "comes from (a debugging aid for the native renderer)");
+SBX_SETTING_DECLARE(bool, native_renderer_log_texture_writes);
+SBX_SETTING_BOOL(native_renderer_log_physical_writes, false, "Logging", "Native Renderer",
+                 "Log memcpy's writes into the physical views by thread, pass and caller, and "
+                 "whether they land in vertex or index data drawn around them (a debugging aid "
+                 "for the native renderer)");
 
 namespace renderer {
 namespace {
@@ -462,7 +464,7 @@ void CheckLoggedWrites(const std::function<bool(uint32_t, uint32_t)>& is_texture
 }  // namespace
 
 bool Buffers_Logging() {
-  return ITC_FLAG(native_renderer_log_buffers);
+  return SBX_GET(native_renderer_log_buffers);
 }
 
 // Kept out of line: inlined, its stack frame (Seen's and the summary's) was
@@ -494,7 +496,7 @@ void Buffers_OnCommand(uint8_t* base, uint32_t id, uint32_t payload, uint32_t co
 }
 
 bool Buffers_LogPhysicalWrites() {
-  return ITC_FLAG(native_renderer_log_physical_writes);
+  return SBX_GET(native_renderer_log_physical_writes);
 }
 
 void Buffers_OnFrameStart(const std::function<bool(uint32_t, uint32_t)>& is_texture) {
@@ -555,7 +557,7 @@ void Buffers_TakeNewWrites(std::vector<std::pair<uint32_t, uint32_t>>& out) {
 
 void Buffers_KeepSegments(bool keep) {
   // The texture cache's write log asks of them too.
-  g_keep_segments = keep || ITC_FLAG(native_renderer_log_texture_writes);
+  g_keep_segments = keep || SBX_GET(native_renderer_log_texture_writes);
 }
 
 void Buffers_CollectMirrorWrites() {

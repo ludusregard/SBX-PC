@@ -7,7 +7,10 @@
 #include <rex/rex_app.h>
 
 #include "audio/native_audio.h"
+#include "base/log.h"
+#include "base/settings.h"
 #include "base/settings_file.h"
+#include "game/archive.h"
 #include "hooks/custom_music.h"
 #include "hooks/patch_loader.h"
 #ifdef SBX_VULKAN_RENDERER
@@ -27,8 +30,10 @@ class SbxApp : public rex::ReXApp {
   }
 
   // The settings file is sbx.toml next to sbx.exe (the SDK would name it
-  // after the window title). The SDK loads it right after this; the F4
-  // menu's Save button writes it (src/base/settings_file.h).
+  // after the window title). Our settings (src/base/settings.h) are read
+  // from it here; the SDK reads its own cvars from the same file right
+  // after this. The F4 menu's Save button writes it
+  // (src/base/settings_file.h).
   void OnConfigurePaths(rex::PathConfig& paths) override {
     if (paths.game_data_root.empty()) {
         paths.game_data_root =
@@ -36,6 +41,12 @@ class SbxApp : public rex::ReXApp {
     }
     paths.config_path = rex::filesystem::GetExecutableFolder() / "sbx.toml";
     settings_file::SetPath(paths.config_path);
+    if (!sbx::settings::LaunchOptionsApplied()) {
+      // main.cpp's filter didn't run (a build without -Wl,--wrap=main):
+      // our launch options weren't applied, and reached the SDK's parser.
+      ITC_LOG_ERROR("settings: launch options weren't read (the command line wasn't filtered)");
+    }
+    settings_file::Load();
   }
 
   // Our own audio output instead of the SDK's render driver and Audio Worker
@@ -44,8 +55,10 @@ class SbxApp : public rex::ReXApp {
 
   // PATCH_DATA is looked for in the game data root (src/hooks/patch_loader.cpp),
   // and ADDON_DATA/CUSTOM_MUSIC (src/hooks/custom_music.cpp). With the native
-  // renderer, the movies are read from there too (src/movies/movie.cpp).
+  // renderer, the movies are read from there too (src/movies/movie.cpp). The
+  // native archive loader reads the .DAT files from it (src/game/archive.cpp).
   void OnPostSetup() override {
+    game::SetArchiveDataRoot(game_data_root());
     patch_loader::SetGameDataRoot(game_data_root());
     custom_music::SetGameDataRoot(game_data_root());
 #ifdef SBX_VULKAN_RENDERER

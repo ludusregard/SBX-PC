@@ -8,14 +8,13 @@
 // impacts and the pairs' response and solve stay recompiled.
 
 #include "game/collision.h"
+#include "base/settings.h"
 #include "game/physics.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_collision, true, "SBX",
-                    "Our own C++ for the collision shapes (their constructors, getters, "
-                    "bounds, placements, contacts) instead of the recompiled functions; the "
-                    "box-box tests, impacts and pair solver stay recompiled");
+SBX_SETTING_BOOL(native_collision, true, "Overrides", "Cars",
+                 "Our own C++ for the collision shapes (their constructors, getters, "
+                 "bounds, placements, contacts) instead of the recompiled functions; the "
+                 "box-box tests, impacts and pair solver stay recompiled");
 
 namespace {
 
@@ -41,7 +40,7 @@ constexpr uint32_t kEdgeStarts = 0x825F0D04;
 constexpr uint32_t kEdgeEnds = 0x825F0D34;
 constexpr uint32_t kAxisCorners = 0x82002AEC;
 
-bool On() { return REXCVAR_GET(native_collision); }
+bool On() { return SBX_GET(native_collision); }
 
 // The vector library, recompiled.
 void VectorCopy(Guest& g, Vector* to, const Vector* from) { g.Call(sub_82291B20, to, from); }

@@ -7,14 +7,13 @@
 // long, an iterator that isn't the list's) are left to the recompiled
 // functions, run from the start.
 
+#include "base/settings.h"
 #include "game/std_types.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_std_list, true, "SBX",
-                    "Our own C++ for the C++ library's list of pointers (a node allocated, a "
-                    "list made, insert, erase) instead of the recompiled functions; operator "
-                    "new and delete stay recompiled");
+SBX_SETTING_BOOL(native_std_list, true, "Overrides", "Runtime",
+                 "Our own C++ for the C++ library's list of pointers (a node allocated, a "
+                 "list made, insert, erase) instead of the recompiled functions; operator "
+                 "new and delete stay recompiled");
 
 namespace {
 
@@ -26,7 +25,7 @@ using guest::Guest;
 
 constexpr uint32_t kMaxSize = 0x3FFFFFFF;
 
-bool On() { return REXCVAR_GET(native_std_list); }
+bool On() { return SBX_GET(native_std_list); }
 
 void* OperatorNew(Guest& g, uint32_t bytes) { return At<void>(g.Call(sub_8258C000, bytes)); }
 void OperatorDelete(Guest& g, void* block) { g.Call(sub_8258C868, block); }

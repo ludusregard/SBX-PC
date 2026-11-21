@@ -10,6 +10,20 @@
 // BUILD_CRS/, the id is either the game's (23009-24367) or the one within
 // that archive (0-1358). Files are uncompressed, like the dumps.
 //
+// Both folders are read with their sub-folders, so files can be organized
+// freely (cars/z33/00003152.node). A file with any other name is served by
+// the folder's TOC.xml, which gives an id a file by its path in the folder:
+//
+//   <TOC>
+//     <File Id="3152" Path="cars/z33/z33_a_tr.node"/>
+//   </TOC>
+//
+// TOC.xml is only read at the folder's root. Its entries win over files
+// named by the same id; a file it lists isn't also read by its name. Names
+// that start with a dot (a submodule's .git) are skipped, files or folders.
+// The folders are read once, at Archive::Init: a load looks its id up in a
+// table, so neither the folder walk nor TOC.xml costs anything per load.
+//
 // It uses the game's own loose-file support (docs/game_data.md): an entry
 // whose data is a file on disc has a start sector of 0, and
 // Archive::FindLooseFile (sub_8209D9F8) gives the file's path. After
@@ -25,13 +39,16 @@
 // a language's files, chosen by --language, from
 //
 //   assets/ADDON_DATA/LANGUAGES/<LANG>/<id>.<any extension>       text, screens
-//   assets/ADDON_DATA/LANGUAGES/FONTS/<HD|SD>/<SCRIPT>/<id>.<ext>  fonts
+//   assets/ADDON_DATA/LANGUAGES/FONTS/<SDF|SD>/<SCRIPT>/<id>.<ext>  fonts
 //
 // Every id found in any language folder or font folder is a "language id".
 // For those ids a PATCH_DATA file is ignored, so text left in PATCH_DATA
 // can't show up in another language; the chosen language's file is served,
-// else the disc's. A font id is looked for in --font_quality's folder for the
-// language's script, then the other quality's, then the disc's. A language's
+// else the disc's. A font id is looked for in FONTS/SDF/ for the language's
+// script (the distance-field fonts sbxr_tools' font_upscale makes, sharp at
+// any resolution; src/hooks/font.cpp), then FONTS/SD/ (the 720p fonts, the
+// fallback), then the disc's. Without --native_shaders, which the SDF fonts
+// need, only SD. A language's
 // script comes from its language.xml (<Language Name="English" Font="LATIN"/>);
 // without one, JP uses JAPANESE and every other language LATIN. Until
 // LANGUAGES/ holds files nothing changes. Phase 1 of the language plan: read
@@ -49,16 +66,19 @@
 // --patch_loader=false turns it all off.
 
 #include "hooks/patch_loader.h"
+#include "base/settings.h"
+#include "hooks/native_calls.h"
 
+#include "game/archive.h"
 #include "guest.h"
 #include "hooks/sidecar.h"
 
-#include <rex/cvar.h>
 #include <rex/logging.h>
 
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <cstring>
 #include <fstream>
 #include <map>
 #include <mutex>
@@ -70,15 +90,15 @@
 #include <unordered_map>
 #include <vector>
 
-REXCVAR_DEFINE_BOOL(patch_loader, true, "SBX",
-                    "Load archive entries from PATCH_DATA/BUILD/TXR/ (experimental)");
-REXCVAR_DEFINE_STRING(language, "", "SBX",
-                      "The game's language: a folder in ADDON_DATA/LANGUAGES/ (EN, JP, ...). "
-                      "Empty: EN if that folder exists, else JP (the disc's text). Read at "
-                      "startup");
-REXCVAR_DEFINE_STRING(font_quality, "hd", "SBX",
-                      "Which font folder in ADDON_DATA/LANGUAGES/FONTS/ is looked in first: "
-                      "hd or sd (the other is the fallback). Read at startup");
+SBX_SETTING_BOOL(patch_loader, true, "Hooks", "Patches",
+                 "Load archive entries from PATCH_DATA/BUILD/TXR/ (experimental)");
+SBX_SETTING_STRING(language, "", "Hooks", "Language",
+                   "The game's language: a folder in ADDON_DATA/LANGUAGES/ (EN, JP, ...). "
+                   "Empty: EN if that folder exists, else JP (the disc's text). Read at "
+                   "startup", sbx::kRestart);
+// The distance-field fonts draw right only through the hand-written shaders
+// (src/renderer/vulkan/glsl/boot/font_sdf.glsl).
+SBX_SETTING_DECLARE(bool, native_shaders);
 
 namespace {
 
@@ -120,7 +140,8 @@ std::string Upper(std::string text) {
 // The file's name if it's printable ASCII (the guest path is a C string).
 std::optional<std::string> AsciiName(const std::filesystem::path& file) {
   std::string name;
-  for (auto c : file.filename().native()) {
+  const std::filesystem::path filename = file.filename();  // kept: native() refers into it
+  for (auto c : filename.native()) {
     if (c < 0x20 || c > 0x7E) {
       return std::nullopt;
     }
@@ -231,13 +252,62 @@ std::vector<Found> ScanFolder(const std::filesystem::path& dir, const std::strin
   return found;
 }
 
-void ScanPatchData(std::vector<Found>& found, bool crs) {
-  const std::string folder = crs ? "BUILD_CRS" : "BUILD";
-  auto dir = g_game_data_root / "PATCH_DATA" / "BUILD" / "TXR" / folder;
-  for (Found& f : ScanFolder(dir, "PATCH_DATA\\BUILD\\TXR\\" + folder,
-                             "PATCH_DATA/BUILD/TXR/" + folder, crs, false)) {
-    found.push_back(std::move(f));
+// A file under a patch folder: where it is on disk, and its path in the
+// folder (backslashes, as the guest path takes it).
+struct TreeFile {
+  std::filesystem::path file;
+  std::string relative;
+};
+
+// A folder path as the log shows it ('/' between folders).
+std::string Shown(std::string path) {
+  std::replace(path.begin(), path.end(), '\\', '/');
+  return path;
+}
+
+// The regular files under `dir`, sub-folders included, sorted by their path
+// in it. Names starting with a dot are skipped (files and folders), and so
+// are names that aren't printable ASCII (logged).
+std::vector<TreeFile> FilesUnder(const std::filesystem::path& dir, const std::string& label) {
+  std::vector<TreeFile> files;
+  std::error_code ec;
+  if (!std::filesystem::is_directory(dir, ec)) {
+    return files;
   }
+  std::filesystem::recursive_directory_iterator it(dir, ec), end;
+  for (; !ec && it != end; it.increment(ec)) {
+    auto name = AsciiName(it->path());
+    bool dot = name && !name->empty() && (*name)[0] == '.';
+    if (it->is_directory(ec)) {
+      if (!name || dot) {
+        if (!name) {
+          REXLOG_WARN("patch_loader: skipped a folder in {}: not an ASCII name", label);
+        }
+        it.disable_recursion_pending();
+      }
+      continue;
+    }
+    if (dot || !it->is_regular_file(ec)) {
+      continue;
+    }
+    if (!name) {
+      REXLOG_WARN("patch_loader: skipped a file in {}: not an ASCII name", label);
+      continue;
+    }
+    // The folders above it are ASCII (others aren't walked into).
+    std::string relative;
+    for (const auto& part : it->path().lexically_relative(dir)) {
+      if (!relative.empty()) {
+        relative += '\\';
+      }
+      relative += *AsciiName(part);
+    }
+    files.push_back({it->path(), relative});
+  }
+  std::sort(files.begin(), files.end(), [](const TreeFile& a, const TreeFile& b) {
+    return Upper(a.relative) < Upper(b.relative);
+  });
+  return files;
 }
 
 // An attribute's value in a small XML element's text, or "" (enough for
@@ -259,6 +329,186 @@ std::string XmlAttribute(const std::string& text, const std::string& name) {
     at += name.size();
   }
   return {};
+}
+
+// XML's five entities read back (&amp; last, so "&amp;lt;" stays "&lt;").
+std::string XmlUnescape(std::string text) {
+  for (auto [from, to] : {std::pair{"&quot;", "\""}, {"&apos;", "'"}, {"&lt;", "<"}, {"&gt;", ">"},
+                          {"&amp;", "&"}}) {
+    std::string f = from;
+    for (size_t at = 0; (at = text.find(f, at)) != std::string::npos; at += std::strlen(to)) {
+      text.replace(at, f.size(), to);
+    }
+  }
+  return text;
+}
+
+// One entry of a patch folder's TOC.xml: an id and the file's path in the
+// folder (backslashes).
+struct TocEntry {
+  uint32_t id;
+  std::string relative;
+};
+
+// A TOC.xml path as the guest path takes it ('/' or '\' between folders,
+// "." parts dropped), or nullopt if it leaves the folder or isn't printable
+// ASCII.
+std::optional<std::string> TocPath(const std::string& path) {
+  std::string relative, part;
+  auto flush = [&]() -> bool {
+    if (part == "..") {
+      return false;
+    }
+    if (!part.empty() && part != ".") {
+      relative += (relative.empty() ? "" : "\\") + part;
+    }
+    part.clear();
+    return true;
+  };
+  if (path.empty() || path[0] == '/' || path[0] == '\\') {
+    return std::nullopt;
+  }
+  for (char c : path) {
+    if (c < 0x20 || c > 0x7E || c == ':') {
+      return std::nullopt;
+    }
+    if (c == '/' || c == '\\') {
+      if (!flush()) {
+        return std::nullopt;
+      }
+    } else {
+      part.push_back(c);
+    }
+  }
+  if (!flush() || relative.empty()) {
+    return std::nullopt;
+  }
+  return relative;
+}
+
+// The <File Id="..." Path="..."/> entries of `dir`'s TOC.xml (none without
+// one). Ids read as file names do (crs: BUILD_CRS's two kinds). Comments are
+// skipped; a bad entry is logged and skipped.
+std::vector<TocEntry> ReadToc(const std::filesystem::path& dir, const std::string& label,
+                              bool crs) {
+  std::vector<TocEntry> entries;
+  std::filesystem::path xml;
+  for (const auto& file : FilesIn(dir)) {
+    if (auto name = AsciiName(file); name && Upper(*name) == "TOC.XML") {
+      xml = file;
+    }
+  }
+  if (xml.empty()) {
+    return entries;
+  }
+  std::ifstream in(xml, std::ios::binary);
+  std::stringstream text;
+  text << in.rdbuf();
+  std::string body = text.str();
+  for (size_t at; (at = body.find("<!--")) != std::string::npos;) {
+    size_t close = body.find("-->", at + 4);
+    body.erase(at, close == std::string::npos ? std::string::npos : close + 3 - at);
+  }
+  if (!in || body.find("<TOC") == std::string::npos) {
+    REXLOG_WARN("patch_loader: {}/TOC.xml has no <TOC> element; ignored", label);
+    return entries;
+  }
+  for (size_t at = 0; (at = body.find("<File", at)) != std::string::npos; at += 5) {
+    char next = at + 5 < body.size() ? body[at + 5] : '>';
+    if (!std::isspace(static_cast<unsigned char>(next)) && next != '/' && next != '>') {
+      continue;  // another element (<Files>, say)
+    }
+    size_t close = body.find('>', at);
+    std::string tag = body.substr(at, close == std::string::npos ? std::string::npos : close - at);
+    std::string id_text = XmlAttribute(tag, "Id");
+    std::string path_text = XmlUnescape(XmlAttribute(tag, "Path"));
+    auto id = ParseId(id_text, crs);
+    auto relative = TocPath(path_text);
+    if (!id || !relative) {
+      REXLOG_WARN("patch_loader: {}/TOC.xml: skipped <File Id=\"{}\" Path=\"{}\">: {}", label,
+                  id_text, path_text, !id ? "not an archive id" : "not a path in the folder");
+      continue;
+    }
+    entries.push_back({*id, *relative});
+  }
+  return entries;
+}
+
+// A patch folder's files: those TOC.xml lists, then the rest of the folder's
+// tree named by an id. The first file found for an id wins (TOC.xml's, else
+// the first by path); the others are logged.
+std::vector<Found> ScanPatchFolder(const std::filesystem::path& dir, const std::string& guest_dir,
+                                   const std::string& label, bool crs) {
+  std::vector<Found> found;
+  std::set<std::string> listed;  // TOC.xml's paths, upper case
+  auto add = [&](uint32_t id, const std::filesystem::path& file, const std::string& relative) {
+    std::error_code ec;
+    uint64_t size = std::filesystem::file_size(file, ec);
+    if (ec || size > UINT32_MAX) {
+      REXLOG_WARN("patch_loader: skipped {}/{}: can't read its size", label, Shown(relative));
+      return;
+    }
+    auto same =
+        std::find_if(found.begin(), found.end(), [&](const Found& f) { return f.id == id; });
+    if (same != found.end()) {
+      REXLOG_WARN("patch_loader: skipped {}/{}: id {} is already given by {}", label,
+                  Shown(relative), id, same->path);
+      return;
+    }
+    found.push_back({id, uint32_t(size), guest_dir + "\\" + relative});
+  };
+
+  const std::vector<TocEntry> toc = ReadToc(dir, label, crs);
+  for (const TocEntry& entry : toc) {
+    std::filesystem::path file = dir;
+    for (size_t at = 0; at <= entry.relative.size();) {
+      size_t cut = std::min(entry.relative.find('\\', at), entry.relative.size());
+      file /= entry.relative.substr(at, cut - at);
+      at = cut + 1;
+    }
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(file, ec)) {
+      REXLOG_WARN("patch_loader: {}/TOC.xml: id {}: {} not found", label, entry.id,
+                  Shown(entry.relative));
+      continue;
+    }
+    listed.insert(Upper(entry.relative));
+    add(entry.id, file, entry.relative);
+  }
+
+  size_t named = 0;
+  for (const TreeFile& f : FilesUnder(dir, label)) {
+    const std::string upper = Upper(f.relative);
+    if (listed.count(upper) || upper == "TOC.XML") {
+      continue;
+    }
+    if (Upper(f.file.extension().string()) == ".SBPR") {
+      continue;  // a sidecar: read with the file it's beside
+    }
+    auto id = ParseId(*AsciiName(f.file), crs);
+    if (!id) {
+      REXLOG_WARN("patch_loader: skipped {}/{}: not an archive id, and not in TOC.xml", label,
+                  Shown(f.relative));
+      continue;
+    }
+    size_t before = found.size();
+    add(*id, f.file, f.relative);
+    named += found.size() - before;
+  }
+  if (!found.empty()) {
+    REXLOG_INFO("patch_loader: {}: {} files ({} by TOC.xml, {} by their names)", label,
+                found.size(), found.size() - named, named);
+  }
+  return found;
+}
+
+void ScanPatchData(std::vector<Found>& found, bool crs) {
+  const std::string folder = crs ? "BUILD_CRS" : "BUILD";
+  auto dir = g_game_data_root / "PATCH_DATA" / "BUILD" / "TXR" / folder;
+  for (Found& f : ScanPatchFolder(dir, "PATCH_DATA\\BUILD\\TXR\\" + folder,
+                                  "PATCH_DATA/BUILD/TXR/" + folder, crs)) {
+    found.push_back(std::move(f));
+  }
 }
 
 // A language folder's language.xml: its display name and font script.
@@ -359,7 +609,7 @@ void ApplyLanguages(std::vector<Found>& found) {
 
   // The language: --language, else EN if it exists, else JP (the disc's).
   auto has = [&](const std::string& code) { return language_files.count(Upper(code)) != 0; };
-  std::string wanted = Upper(REXCVAR_GET(language));
+  std::string wanted = Upper(SBX_GET(language));
   if (!wanted.empty() && !has(wanted) && wanted != "JP") {
     REXLOG_WARN("patch_loader: --language={}: no such folder in ADDON_DATA/LANGUAGES/; "
                 "choosing one",
@@ -407,13 +657,20 @@ void ApplyLanguages(std::vector<Found>& found) {
     }
   }
 
-  // Its fonts: the preferred quality's folder for its script, then the other.
-  std::string first = Upper(REXCVAR_GET(font_quality)) == "SD" ? "SD" : "HD";
-  std::string second = first == "HD" ? "SD" : "HD";
+  // Its fonts: SDF for its script, then SD. SDF only with the hand-written
+  // shaders, which draw its distance fields (the translated ones would show
+  // them as blurred coverage).
+  const bool sdf = SBX_GET(native_shaders);
+  if (!sdf) {
+    REXLOG_INFO("patch_loader: the SDF fonts need native_shaders; using the SD fonts");
+  }
+  const std::string first = sdf ? "SDF" : "SD";
+  const std::vector<std::string> qualities =
+      sdf ? std::vector<std::string>{"SDF", "SD"} : std::vector<std::string>{"SD"};
   size_t font_count = 0;
   for (uint32_t id : font_ids) {
     const Found* pick = nullptr;
-    for (const std::string& quality : {first, second}) {
+    for (const std::string& quality : qualities) {
       auto it = font_files.find({quality, chosen.script});
       if (it == font_files.end()) {
         continue;
@@ -461,8 +718,8 @@ std::string ActiveLanguage() {
 
 // Archive::Init: reads both TOCs, then the overrides are applied to them.
 extern "C" REX_FUNC(sub_8209E348) {
-  __imp__sub_8209E348(ctx, base);
-  if (!REXCVAR_GET(patch_loader) || g_game_data_root.empty()) {
+  hooks::NativeArchive_Init(ctx, base);
+  if (!SBX_GET(patch_loader) || g_game_data_root.empty()) {
     return;
   }
 
@@ -523,12 +780,19 @@ extern "C" REX_FUNC(sub_8209E348) {
   }
 }
 
-// Archive::FindLooseFile: r3 = an archive id; returns its loose file's path.
+// Archive::FindLooseFile: r3 = an archive id; returns its loose file's path:
+// a PATCH_DATA override's, else the game's (our walk of its table with
+// --native_archive, src/game/archive.cpp).
 extern "C" REX_FUNC(sub_8209D9F8) {
   auto it = g_overrides.find(ctx.r3.u32);
   if (it != g_overrides.end()) {
     REXLOG_INFO("patch_loader: loading id {} from {}", it->first, it->second.path);
     ctx.r3.u64 = it->second.guest_path;
+    return;
+  }
+  if (game::NativeArchive()) {
+    guest::Guest g(ctx, base);
+    ctx.r3.u64 = game::FindLooseFile(ctx.r3.u32);
     return;
   }
   __imp__sub_8209D9F8(ctx, base);

@@ -6,16 +6,15 @@
 // (sub_8211E378) and draw stay recompiled, and so do the HUD's own set-up,
 // its racers' and route ticks and RaceHud::RunMovie (native_race_hud).
 
+#include "base/settings.h"
 #include "game/physics.h"
 #include "game/race_hud.h"
 #include "game/vehicle.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_race_hud_object, true, "SBX",
-                    "Our own C++ for the race HUD object (its gauges, gear, boost, player, "
-                    "warning, draw, item and teardown) instead of the recompiled functions; "
-                    "the UI movies and the HUD's set-up stay recompiled");
+SBX_SETTING_BOOL(native_race_hud_object, true, "Overrides", "Race",
+                 "Our own C++ for the race HUD object (its gauges, gear, boost, player, "
+                 "warning, draw, item and teardown) instead of the recompiled functions; "
+                 "the UI movies and the HUD's set-up stay recompiled");
 
 namespace {
 
@@ -27,7 +26,7 @@ using guest::At;
 using guest::Guest;
 using guest::u32_be;
 
-bool On() { return REXCVAR_GET(native_race_hud_object); }
+bool On() { return SBX_GET(native_race_hud_object); }
 
 constexpr uint32_t kRaceProgress = 0x826C7D90;  // [it] (writable)
 constexpr uint32_t kTouchGroups = 0x07000000;   // The collision groups the touching test looks at.

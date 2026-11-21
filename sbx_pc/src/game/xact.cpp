@@ -3,13 +3,12 @@
 // waves' and tracks' constructors (most hold a node pool and event nodes),
 // a cue's sound detached, the listeners added, and a few getters.
 
+#include "base/settings.h"
 #include "game/guest_types.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_xact, true, "SBX",
-                    "Our own C++ for the XACT library's constructors, destructors and small "
-                    "setters and getters instead of the recompiled functions");
+SBX_SETTING_BOOL(native_xact, true, "Overrides", "Audio",
+                 "Our own C++ for the XACT library's constructors, destructors and small "
+                 "setters and getters instead of the recompiled functions");
 
 namespace {
 
@@ -171,7 +170,7 @@ struct XACTWaveEntry {
   u32_be loop_length;
 };
 
-bool On() { return REXCVAR_GET(native_xact); }
+bool On() { return SBX_GET(native_xact); }
 
 void ConstructSettingsBase(XACTGlobalSettings* settings, uint32_t owner) {
   settings->owner = owner;

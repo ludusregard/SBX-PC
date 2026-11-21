@@ -26,6 +26,12 @@ layout(set = 1, binding = 0, scalar) uniform XeSystemConstants {
   layout(offset = 12) uint line_loop_closing_index;
   layout(offset = 16) int vertex_base_index;
   layout(offset = 124) vec3 ndc_scale;
+  // SBX's own: the translator's point_vertex_diameter_min, which no port
+  // reads (ports don't make point sprites) and the renderer doesn't set
+  // otherwise; the 2D sprite shaders' mode (passes.cpp), its low byte:
+  // 1 menu texture filtering (boot/menu_filter.glsl); 2 a distance-field
+  // font, its spread in 1/256 sheet pixels from bit 8 (boot/font_sdf.glsl).
+  layout(offset = 136) uint sbx_sprite_mode;
   layout(offset = 140) vec3 ndc_offset;
   layout(offset = 176) uint texture_swizzled_signs[8];
   layout(offset = 272) float alpha_test_reference;

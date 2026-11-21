@@ -4,13 +4,12 @@
 //
 // The paints, palette, textures and culling stay recompiled.
 
+#include "base/settings.h"
 #include "game/model.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_material_passes, true, "SBX",
-                    "Our own C++ for the part models' materials (counts, records, the alpha "
-                    "setters, the paint table's lookups) instead of the recompiled functions");
+SBX_SETTING_BOOL(native_material_passes, true, "Overrides", "Scene",
+                 "Our own C++ for the part models' materials (counts, records, the alpha "
+                 "setters, the paint table's lookups) instead of the recompiled functions");
 
 namespace {
 
@@ -25,7 +24,7 @@ constexpr uint32_t kPaintColumns = 4;
 constexpr uint32_t kPaintRecords = 0x82003660;
 constexpr uint32_t kPasses = 2;
 
-bool On() { return REXCVAR_GET(native_material_passes); }
+bool On() { return SBX_GET(native_material_passes); }
 
 // PartModel::MaterialCount and MaterialAt for a pass (recompiled).
 int32_t MaterialCount(Guest& g, void* model, uint32_t mesh, uint32_t pass) {

@@ -1,12 +1,16 @@
 // The settings file: sbx.toml next to sbx.exe (src/base/settings_file.cpp).
 //
-// The SDK reads it at every start, before the command line and REX_*
-// environment variables (which win over it). It holds one setting per line,
-// `name = value`, flat (no [sections]: the SDK would read `[Input]` and
-// `mnk_mode` as a flag named `Input_mnk_mode`). The F4 menu's Save button
-// writes it through Save here.
+// It holds one setting per line, `name = value`, flat (no [sections]: the
+// SDK would read `[Input]` and `mnk_mode` as a flag named
+// `Input_mnk_mode`). Our settings (base/settings.h) are read from it by
+// Load here, at every start; ReXGlue reads its own cvars from the same file
+// itself, right after (ours aren't among its cvars). Both rank the file below REX_<NAME>
+// environment variables and the command line, which win over it. The F4
+// menu's Save button writes it through Save here.
 
 #pragma once
+
+#include "base/settings.h"
 
 #include <rex/cvar.h>
 
@@ -22,8 +26,21 @@ namespace settings_file {
 void SetPath(const std::filesystem::path& path);
 const std::filesystem::path& Path();
 
-// A flag's value as TOML text: true/false, a number, or a quoted string.
+// Reads our settings from the file (a missing file is no error). A value
+// the environment or the command line already set is kept. Lines that
+// aren't ours (ReXGlue's cvars, its [log.levels] table) are left to the SDK.
+// Returns how many settings were set from the file.
+int Load();
+
+// A value's text as written in the file (after the '=', the comment cut
+// off) as plain text: a string's contents unescaped, anything else as it
+// stands. Returns false for an unfinished or badly escaped string.
+bool ReadTOMLValue(std::string_view text, std::string& out);
+
+// A value as TOML text: true/false, a number, or a quoted string. For one
+// of ReXGlue's cvars, and for one of ours.
 std::string TOMLValue(rex::cvar::FlagType type, std::string_view value);
+std::string TOMLValue(sbx::SettingType type, std::string_view value);
 
 // One setting to write.
 struct Entry {

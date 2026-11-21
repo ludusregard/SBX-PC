@@ -1,14 +1,16 @@
 // The settings file (settings_file.h).
 //
-// Lines are matched by their key, not parsed as TOML: the SDK's reader
-// (toml++) does the parsing at startup, and this only has to find a
-// setting's line and swap its value. A key line is `name = value` before the
-// first [table]; tables (the SDK's [log.levels]) are kept untouched after the
-// settings.
+// Lines are matched by their key, not parsed as a whole TOML document: the
+// file is flat, so a key line is `name = value` before the first [table],
+// and its value is one TOML scalar (true/false, a number, or a string).
+// Load reads ours from those lines; ReXGlue's reader (toml++) reads the
+// file for its own cvars. Save finds a setting's line and swaps its value;
+// tables (the SDK's [log.levels]) are kept untouched after the settings.
 
 #include "base/settings_file.h"
 
 #include "base/log.h"
+#include "base/settings.h"
 
 #include <algorithm>
 #include <cctype>
@@ -41,6 +43,7 @@ bool IsKeyChar(char c) {
 struct KeyLine {
   std::string indent;
   std::string name;
+  std::string value;    // the text after '=', trimmed, without the comment
   std::string comment;  // from the '#' on, or empty
 };
 
@@ -90,7 +93,9 @@ std::optional<KeyLine> ParseKeyLine(std::string_view line) {
   std::string_view value = line.substr(equals + 1);
   if (size_t hash = CommentStart(value); hash != std::string_view::npos) {
     key.comment = std::string(value.substr(hash));
+    value = value.substr(0, hash);
   }
+  key.value = std::string(Trim(value));
   return key;
 }
 
@@ -123,6 +128,130 @@ void SetPath(const std::filesystem::path& path) {
 
 const std::filesystem::path& Path() {
   return g_path;
+}
+
+bool ReadTOMLValue(std::string_view text, std::string& out) {
+  text = Trim(text);
+  out.clear();
+  if (text.empty() || (text.front() != '"' && text.front() != '\'')) {
+    out = std::string(text);  // true/false or a number, read by the setting
+    return true;
+  }
+  const char quote = text.front();
+  if (text.size() < 2 || text.back() != quote) {
+    return false;
+  }
+  std::string_view body = text.substr(1, text.size() - 2);
+  if (quote == '\'') {
+    out = std::string(body);  // a literal string: no escapes
+    return true;
+  }
+  for (size_t i = 0; i < body.size(); i++) {
+    if (body[i] != '\\') {
+      out += body[i];
+      continue;
+    }
+    if (++i >= body.size()) {
+      return false;
+    }
+    switch (body[i]) {
+      case '"':
+        out += '"';
+        break;
+      case '\\':
+        out += '\\';
+        break;
+      case 'n':
+        out += '\n';
+        break;
+      case 'r':
+        out += '\r';
+        break;
+      case 't':
+        out += '\t';
+        break;
+      case 'b':
+        out += '\b';
+        break;
+      case 'f':
+        out += '\f';
+        break;
+      case 'u':
+      case 'U': {
+        size_t digits = body[i] == 'u' ? 4 : 8;
+        uint32_t code = 0;
+        for (size_t d = 1; d <= digits; d++) {
+          if (i + d >= body.size() || !std::isxdigit(static_cast<unsigned char>(body[i + d]))) {
+            return false;
+          }
+          char c = char(std::tolower(static_cast<unsigned char>(body[i + d])));
+          code = code * 16 + uint32_t(c <= '9' ? c - '0' : c - 'a' + 10);
+        }
+        i += digits;
+        // As UTF-8.
+        if (code < 0x80) {
+          out += char(code);
+        } else if (code < 0x800) {
+          out += char(0xC0 | (code >> 6));
+          out += char(0x80 | (code & 0x3F));
+        } else if (code < 0x10000) {
+          out += char(0xE0 | (code >> 12));
+          out += char(0x80 | ((code >> 6) & 0x3F));
+          out += char(0x80 | (code & 0x3F));
+        } else {
+          out += char(0xF0 | (code >> 18));
+          out += char(0x80 | ((code >> 12) & 0x3F));
+          out += char(0x80 | ((code >> 6) & 0x3F));
+          out += char(0x80 | (code & 0x3F));
+        }
+        break;
+      }
+      default:
+        return false;
+    }
+  }
+  return true;
+}
+
+int Load() {
+  if (g_path.empty()) {
+    return 0;
+  }
+  std::ifstream file(g_path, std::ios::binary);
+  if (!file) {
+    return 0;  // no file yet: every setting at its default
+  }
+  int loaded = 0;
+  std::string line;
+  int number = 0;
+  while (std::getline(file, line)) {
+    number++;
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    if (IsTableHeader(line)) {
+      break;  // the SDK's tables: none of ours are in them
+    }
+    std::optional<KeyLine> key = ParseKeyLine(line);
+    if (!key) {
+      continue;
+    }
+    sbx::SettingBase* setting = sbx::settings::Find(key->name);
+    if (!setting) {
+      continue;  // one of ReXGlue's cvars, or an old name: the SDK's to read
+    }
+    std::string value;
+    if (!ReadTOMLValue(key->value, value) ||
+        !setting->SetText(value, sbx::SettingSource::kConfig)) {
+      ITC_LOG_WARN("settings: {} line {}: {} = {} isn't a valid value; kept {}",
+                   g_path.filename().string(), number, key->name, key->value,
+                   setting->ValueText());
+      continue;
+    }
+    loaded++;
+  }
+  ITC_LOG_INFO("settings: read {} setting(s) from {}", loaded, g_path.filename().string());
+  return loaded;
 }
 
 std::string TOMLValue(rex::cvar::FlagType type, std::string_view value) {
@@ -187,6 +316,22 @@ std::string TOMLValue(rex::cvar::FlagType type, std::string_view value) {
       return text;
     }
   }
+}
+
+std::string TOMLValue(sbx::SettingType type, std::string_view value) {
+  using rex::cvar::FlagType;
+  switch (type) {
+    case sbx::SettingType::kBool:
+      return TOMLValue(FlagType::Boolean, value);
+    case sbx::SettingType::kInt:
+      return TOMLValue(FlagType::Int32, value);
+    case sbx::SettingType::kFloat:
+    case sbx::SettingType::kDouble:
+      return TOMLValue(FlagType::Double, value);
+    case sbx::SettingType::kString:
+      break;
+  }
+  return TOMLValue(FlagType::String, value);
 }
 
 bool Save(const std::vector<Entry>& entries, std::string& error) {

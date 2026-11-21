@@ -3,13 +3,12 @@
 // camera set-ups, the dialogs' movies opened, the controller options'
 // buffers freed, and the screens' state steps.
 
+#include "base/settings.h"
 #include "game/game_modes.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_type67_modes, true, "SBX",
-                    "Our own C++ for the type 6 and 7 screens' and garage stage's small steps "
-                    "instead of the recompiled functions");
+SBX_SETTING_BOOL(native_type67_modes, true, "Overrides", "Menus and UI",
+                 "Our own C++ for the type 6 and 7 screens' and garage stage's small steps "
+                 "instead of the recompiled functions");
 
 namespace {
 
@@ -87,7 +86,7 @@ struct PanelScreen {
   u32_be unknown_11680;
 };
 
-bool On() { return REXCVAR_GET(native_type67_modes); }
+bool On() { return SBX_GET(native_type67_modes); }
 
 void FreeBuffer(Guest& g, u32_be& buffer) {
   g.Call(sub_82292D70, buffer, 0u, kMemRelease);  // VirtualFree

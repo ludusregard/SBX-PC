@@ -8,6 +8,7 @@
 // Challenge); more may turn up (anything that runs too fast or flickers
 // only above 30 fps).
 
+#include "base/settings.h"
 #include "game/ui_movies.h"
 #include "guest.h"
 #include "hooks/native_calls.h"
@@ -17,7 +18,6 @@
 #include "subtick/per_frame_logic.h"
 
 #include <fmt/format.h>
-#include <rex/cvar.h>
 #include <rex/logging.h>
 
 #include <algorithm>
@@ -34,16 +34,16 @@
 #include <unordered_set>
 #include <vector>
 
-REXCVAR_DECLARE(bool, subtick);
+SBX_SETTING_DECLARE(bool, subtick);
 
-REXCVAR_DEFINE_BOOL(log_race_overlays, false, "SBX",
-                    "Diagnostic: log the race overlays' updates and recordings whenever what "
-                    "happens to them changes (a few passes either side; 2,000 lines at most): "
-                    "which handler ran on each logic pass and whether each pass recorded them");
+SBX_SETTING_BOOL(log_race_overlays, false, "Logging", "Game",
+                 "Diagnostic: log the race overlays' updates and recordings whenever what "
+                 "happens to them changes (a few passes either side; 2,000 lines at most): "
+                 "which handler ran on each logic pass and whether each pass recorded them");
 
-REXCVAR_DEFINE_BOOL(redraw_rival_logo, true, "SBX",
-                    "Draw the rival's logo in the rival intro cutscene on render-only passes "
-                    "too (the cutscene still steps once a tick)");
+SBX_SETTING_BOOL(redraw_rival_logo, true, "Hooks", "Fixes: Interpolation",
+                 "Draw the rival's logo in the rival intro cutscene on render-only passes "
+                 "too (the cutscene still steps once a tick)");
 
 namespace {
 
@@ -321,6 +321,17 @@ std::vector<AddedTarget>* g_added = nullptr;
 // Targets of adding tracks the last logic pass's update put back.
 std::unordered_set<uint32_t> g_put_back_targets;
 
+// On a render-only pass, the words the UI movie updates' tracks write, with
+// their values before, put back in reverse order once the outermost update
+// has drawn. The nodes live outside the bytes the replay restores, and
+// UiMovie::RestorePose puts back only some of their fields, so a track
+// written between ticks could stay: an animation's value from before its
+// end left on a node once it had ended (the interior accessories' TYPE row
+// stuck where its slide had been), or a handler's change to a node (a
+// locked tuning setting greyed out) written over until the page was
+// opened again (John's test, 2026-11-20).
+std::vector<AddedTarget> g_render_only_writes;
+
 uint32_t TrackTarget(uint8_t* base, uint32_t node, uint32_t track, uint32_t descriptor) {
   uint32_t target = node + guest::LoadU32(base, descriptor);
   if (guest::LoadU8(base, descriptor + 9) != 0) {
@@ -355,16 +366,20 @@ extern "C" REX_FUNC(sub_82585C40) {
   uint32_t descriptor = kTrackProperties + 12 * property;
   bool adds = property < kTrackPropertyCount && guest::LoadU8(base, descriptor + 8) == 0;
   uint32_t type = property < kTrackPropertyCount ? guest::LoadU32(base, descriptor + 4) : 3;
-  if (!adds || type >= 3) {
+  if (type >= 3) {
     hooks::NativeUiMovies_ApplyTrack(ctx, base);
     return;
   }
   uint32_t target = TrackTarget(base, node, track, descriptor);
   if (RenderOnly()) {
-    if (!g_put_back_targets.contains(target)) {
+    if (adds && !g_put_back_targets.contains(target)) {
       return;  // an add the update wouldn't undo: once a tick
     }
-  } else {
+    g_render_only_writes.push_back({target, guest::LoadU32(base, target)});
+    hooks::NativeUiMovies_ApplyTrack(ctx, base);
+    return;
+  }
+  if (adds) {
     g_added->push_back({target, guest::LoadU32(base, target)});
   }
   hooks::NativeUiMovies_ApplyTrack(ctx, base);
@@ -408,11 +423,13 @@ void BlendUiMovie(uint8_t* base, uint32_t movie_address) {
 // messages (the menus draw there), in order, to draw again on render-only
 // passes (PerFrameLogic_RedrawMenuUiMovies): the top-level UI movie updates,
 // the garage stage's steps (the car on its turntable and the camera around
-// it) and the parking area's scene.
+// it), the parking area's scene and the power graphs.
 struct MenuDrawCall {
-  enum Kind { kUiMovie, kGarageStage, kParkingArea };
+  enum Kind { kUiMovie, kGarageStage, kParkingArea, kPowerGraph };
   Kind kind;
   uint32_t r3, r4, r5;
+  float f1 = 0.0f, f2 = 0.0f;  // kPowerGraph: the graph's left x and its base y
+  size_t curve = 0;            // kPowerGraph: its car data's curve in g_power_curves
 };
 std::vector<MenuDrawCall> g_menu_draw_calls;
 uint64_t g_menu_draw_pass = ~0ull;
@@ -429,9 +446,10 @@ void NoteMenuDrawCall(MenuDrawCall call) {
 }
 
 void RedrawParkingArea(PPCContext& ctx, uint8_t* base, uint32_t area);
+void RedrawPowerGraph(PPCContext& ctx, uint8_t* base, const MenuDrawCall& call);
 
 bool NotingMenuDrawCalls() {
-  return REXCVAR_GET(subtick) && !RenderOnly() &&
+  return SBX_GET(subtick) && !RenderOnly() &&
          subtick::GameMessages_Delivering() && !subtick::GameMessages_InRace();
 }
 }  // namespace
@@ -451,6 +469,8 @@ void subtick::PerFrameLogic_RedrawMenuUiMovies(PPCContext& ctx, uint8_t* base) {
       sub_8211D4B8(ctx, base);
     } else if (call.kind == MenuDrawCall::kGarageStage) {
       sub_8217DD48(ctx, base);
+    } else if (call.kind == MenuDrawCall::kPowerGraph) {
+      RedrawPowerGraph(ctx, base, call);
     } else {
       RedrawParkingArea(ctx, base, call.r3);
     }
@@ -482,7 +502,7 @@ extern "C" REX_FUNC(sub_821196D0) {
 // update's adding tracks are noted (above).
 extern "C" REX_FUNC(sub_8211D4B8) {
   REX_FUNC_PROLOGUE();
-  bool tracks = REXCVAR_GET(subtick);
+  bool tracks = SBX_GET(subtick);
   std::vector<AddedTarget>* added_before = g_added;
   if (tracks) {
     if (g_update_depth == g_added_by_depth.size()) {
@@ -498,7 +518,7 @@ extern "C" REX_FUNC(sub_8211D4B8) {
   // pass drew: the HUD drew again for a frame after the race's result had
   // taken it down (John's tests, 2026-11-11).
   const bool race = subtick::GameMessages_InRace();
-  if (!REXCVAR_GET(subtick)) {
+  if (!SBX_GET(subtick)) {
     hooks::NativeUiMovies_Update(ctx, base);
   } else if (ctx.r4.u32 != 0) {
     g_ui_movie_draws.SkipUnmatched(race);
@@ -515,6 +535,13 @@ extern "C" REX_FUNC(sub_8211D4B8) {
       NotePutBackTargets(base, *g_added);
     }
     g_update_depth--;
+    if (g_update_depth == 0) {
+      // A render-only pass's writes put back (none on a logic pass).
+      for (auto it = g_render_only_writes.rbegin(); it != g_render_only_writes.rend(); ++it) {
+        guest::StoreU32(base, it->target, it->before);
+      }
+      g_render_only_writes.clear();
+    }
   }
   g_added = added_before;
 }
@@ -530,7 +557,7 @@ extern "C" REX_FUNC(sub_8211D4B8) {
 // On render-only passes +436 keeps the logic pass's value.
 extern "C" REX_FUNC(sub_82210730) {
   REX_FUNC_PROLOGUE();
-  if (!REXCVAR_GET(subtick) || !RenderOnly()) {
+  if (!SBX_GET(subtick) || !RenderOnly()) {
     __imp__sub_82210730(ctx, base);
     return;
   }
@@ -554,7 +581,7 @@ constexpr uint32_t kGarageStageBytes = 6208;
 ReplayFromLogicPass g_garage_stage(kGarageStageBytes, true);
 
 bool GarageStageBlended() {
-  return REXCVAR_GET(subtick) &&
+  return SBX_GET(subtick) &&
          !subtick::GameMessages_InRace();
 }
 }  // namespace
@@ -625,6 +652,66 @@ extern "C" REX_FUNC(sub_82225DE0) {
   subtick::CarTransforms_MenuStageEnd();
 }
 
+// PowerGraph::Draw (sub_8217A620): f1 the graph's left x, f2 its base y,
+// r6 a car data (CarData, built by the caller, often on its own stack): the
+// torque and power curves as 2 x 31 line segments (Line::RecordFlat,
+// sub_82179558) from the car data's curve: +1280 the rev limit (how many
+// segments), +1292 32 torque points 400 rpm apart, +1420 their scale. r3 is
+// passed on and not read. Its callers are the tuning screen
+// (TuningScreen::DrawPowerGraph, sub_821DD790, from its update
+// sub_821E5010) and the garage's car lists (sub_8224E050, sub_8224E0E0),
+// which draw it from their messages, once a tick: with --subtick it flickered
+// (drawn on logic passes only). In the menus it's drawn again on render-only
+// passes (PerFrameLogic_RedrawMenuUiMovies) with a copy of the curve the
+// logic pass drew, as the car data may be gone by then.
+namespace {
+constexpr uint32_t kCurveStart = 1280;  // the first car data byte read
+constexpr uint32_t kCurveEnd = 1424;    // past the last (+1420)
+std::vector<std::array<uint8_t, kCurveEnd - kCurveStart>> g_power_curves;
+uint64_t g_power_curves_pass = ~0ull;
+
+void RedrawPowerGraph(PPCContext& ctx, uint8_t* base, const MenuDrawCall& call) {
+  if (call.curve >= g_power_curves.size()) {
+    return;
+  }
+  const double f1 = ctx.f1.f64, f2 = ctx.f2.f64;
+  const uint64_t r6 = ctx.r6.u64;
+  {
+    guest::StackFrame frame(ctx, (kCurveEnd + 15) & ~15u);
+    const uint32_t car = frame.Local(0);
+    std::memcpy(base + car + kCurveStart, g_power_curves[call.curve].data(),
+                kCurveEnd - kCurveStart);
+    ctx.r3.u64 = call.r3;
+    ctx.r6.u64 = car;
+    ctx.f1.f64 = call.f1;
+    ctx.f2.f64 = call.f2;
+    __imp__sub_8217A620(ctx, base);
+  }
+  ctx.f1.f64 = f1;
+  ctx.f2.f64 = f2;
+  ctx.r6.u64 = r6;
+}
+}  // namespace
+
+extern "C" REX_FUNC(sub_8217A620) {
+  REX_FUNC_PROLOGUE();
+  if (g_update_depth == 0 && NotingMenuDrawCalls()) {
+    const uint64_t pass = subtick::GameMessages_PassNumber();
+    if (pass != g_power_curves_pass) {
+      g_power_curves_pass = pass;
+      g_power_curves.clear();
+    }
+    MenuDrawCall call{MenuDrawCall::kPowerGraph, ctx.r3.u32, 0, 0};
+    call.f1 = float(ctx.f1.f64);
+    call.f2 = float(ctx.f2.f64);
+    call.curve = g_power_curves.size();
+    auto& curve = g_power_curves.emplace_back();
+    std::memcpy(curve.data(), base + ctx.r6.u32 + kCurveStart, curve.size());
+    NoteMenuDrawCall(call);
+  }
+  __imp__sub_8217A620(ctx, base);
+}
+
 // Scrolling text (the garage's ticker): a UI movie keeps a record per
 // scrolling text, found by the text's id in its node map (movie+39884,
 // sub_8211B4E0): +4 set, +8 a frame count, +12 the frames to wait before
@@ -664,7 +751,7 @@ uint32_t TickerRecord(PPCContext& ctx, uint8_t* base, uint32_t movie, uint32_t i
 
 extern "C" REX_FUNC(sub_8211BB10) {
   REX_FUNC_PROLOGUE();
-  if (REXCVAR_GET(subtick) && RenderOnly()) {
+  if (SBX_GET(subtick) && RenderOnly()) {
     return;  // counted once a tick, on logic passes
   }
   __imp__sub_8211BB10(ctx, base);
@@ -672,7 +759,7 @@ extern "C" REX_FUNC(sub_8211BB10) {
 
 extern "C" REX_FUNC(sub_8211B9D0) {
   REX_FUNC_PROLOGUE();
-  if (!REXCVAR_GET(subtick) || !RenderOnly()) {
+  if (!SBX_GET(subtick) || !RenderOnly()) {
     __imp__sub_8211B9D0(ctx, base);
     return;
   }
@@ -768,8 +855,8 @@ void WriteTimes(uint8_t* base, const std::vector<uint32_t>& times, const std::ve
 
 extern "C" REX_FUNC(sub_8257A460) {
   REX_FUNC_PROLOGUE();
-  if (!REXCVAR_GET(subtick)) {
-    __imp__sub_8257A460(ctx, base);
+  if (!SBX_GET(subtick)) {
+    hooks::NativeModelAnimation_Animate(ctx, base);
     return;
   }
   const uint32_t model = ctx.r3.u32;
@@ -779,7 +866,7 @@ extern "C" REX_FUNC(sub_8257A460) {
   if (!RenderOnly()) {
     ModelAnimationTicks& ticks = g_model_animations[model];
     ticks.before = now;
-    __imp__sub_8257A460(ctx, base);
+    hooks::NativeModelAnimation_Animate(ctx, base);
     ticks.after = ReadTimes(base, g_animation_times);
     ticks.tick = tick;
     return;
@@ -793,7 +880,7 @@ extern "C" REX_FUNC(sub_8257A460) {
     }
     WriteTimes(base, g_animation_times, at);
   }
-  __imp__sub_8257A460(ctx, base);
+  hooks::NativeModelAnimation_Animate(ctx, base);
   WriteTimes(base, g_animation_times, now);
 }
 
@@ -808,9 +895,9 @@ extern "C" REX_FUNC(sub_8257A460) {
 // render-only passes each call now gets the flag the logic pass's same call
 // (by car and order within the pass) had. In races that's what the draw sets
 // anyway, so nothing changes there.
-REXCVAR_DEFINE_BOOL(per_tick_car_draw_flag, true, "SBX",
-                    "On render-only passes, give each car draw the draw flag the logic pass's "
-                    "same call had (the cockpit flickered in replays)");
+SBX_SETTING_BOOL(per_tick_car_draw_flag, true, "Hooks", "Fixes: Interpolation",
+                 "On render-only passes, give each car draw the draw flag the logic pass's "
+                 "same call had (the cockpit flickered in replays)");
 
 namespace {
 constexpr uint32_t kDrawFlagOffset = 4296;  // from Car::DrawUpdate's r3
@@ -855,9 +942,9 @@ HoldDrawFlag g_draw_flag;
 // 1860), which of the 21 camera passes are active (+588) and the type (+584)
 // of passes 0 and 3. Turn it on from the overlay during the replay: it logs
 // the next 300 calls.
-REXCVAR_DEFINE_BOOL(log_cockpit_draw, false, "SBX",
-                    "Diagnostic: log each car draw's flags and the active camera passes on "
-                    "logic and render-only passes (the next 300 calls; turn on during a replay)");
+SBX_SETTING_BOOL(log_cockpit_draw, false, "Logging", "Debugging",
+                 "Diagnostic: log each car draw's flags and the active camera passes on "
+                 "logic and render-only passes (the next 300 calls; turn on during a replay)");
 
 namespace {
 constexpr uint32_t kViewports = 0x826B29C8;  // [..] + 0: viewport 0
@@ -868,7 +955,7 @@ bool GuestPointer(uint32_t address) {
 }
 
 void LogCockpitDraw(uint8_t* base, uint32_t object) {
-  if (!REXCVAR_GET(log_cockpit_draw) || g_cockpit_log_lines >= 300) {
+  if (!SBX_GET(log_cockpit_draw) || g_cockpit_log_lines >= 300) {
     return;
   }
   uint32_t viewport = guest::LoadU32(base, kViewports);
@@ -900,14 +987,14 @@ extern "C" REX_FUNC(sub_820DA930) {
   // The car's world matrix is recorded as the tick's pose on logic passes
   // (car_transforms.cpp), and blended before Race::DrawStep.
   uint32_t object = ctx.r3.u32;
-  if (REXCVAR_GET(subtick) && REXCVAR_GET(per_tick_car_draw_flag)) {
+  if (SBX_GET(subtick) && SBX_GET(per_tick_car_draw_flag)) {
     g_draw_flag.Apply(base, object);
   }
   LogCockpitDraw(base, object);
   subtick::CarTransforms_Record(base, object + kDrawUpdateCarOffset);
   subtick::CarTransformRestore pose =
       subtick::CarTransforms_DrawBegin(base, object + kDrawUpdateCarOffset);
-  if (!REXCVAR_GET(subtick)) {
+  if (!SBX_GET(subtick)) {
     __imp__sub_820DA930(ctx, base);
   } else {
     g_boost.Run(base, object + kDrawUpdateBoostOffset, [&] { __imp__sub_820DA930(ctx, base); });
@@ -954,7 +1041,7 @@ std::string OverlayLogPattern(const std::string& line) {
 
 template <typename... Args>
 void LogOverlays(fmt::format_string<Args...> format, Args&&... args) {
-  if (!REXCVAR_GET(log_race_overlays) || g_overlay_log_lines <= 0) {
+  if (!SBX_GET(log_race_overlays) || g_overlay_log_lines <= 0) {
     return;
   }
   const char* pass_kind = RenderOnly() ? "render-only" : "logic";
@@ -997,7 +1084,7 @@ void SaveOverlays(uint8_t* base, uint32_t list, bool paused) {
 
 extern "C" REX_FUNC(sub_8215BE00) {
   REX_FUNC_PROLOGUE();
-  if (!REXCVAR_GET(subtick)) {
+  if (!SBX_GET(subtick)) {
     __imp__sub_8215BE00(ctx, base);
     return;
   }
@@ -1020,7 +1107,7 @@ extern "C" REX_FUNC(sub_8215BE00) {
 // on every pass, as for RaceOverlays::Run.
 extern "C" REX_FUNC(sub_8215BE80) {
   REX_FUNC_PROLOGUE();
-  if (!REXCVAR_GET(subtick) || !subtick::GameMessages_InRace() || RenderOnly()) {
+  if (!SBX_GET(subtick) || !subtick::GameMessages_InRace() || RenderOnly()) {
     __imp__sub_8215BE80(ctx, base);
     return;
   }
@@ -1043,7 +1130,7 @@ void PerFrameLogic_RecordRaceOverlays(PPCContext& ctx, uint8_t* base) {
   uint64_t tick = GetFramePacer().TicksReleased();
   const bool latest = g_overlay_tick == tick;
   const bool before_update = !RenderOnly() && !g_overlay_paused && g_overlay_tick + 1 == tick;
-  if (!REXCVAR_GET(subtick) || g_overlay_list == 0 || !(latest || before_update)) {
+  if (!SBX_GET(subtick) || g_overlay_list == 0 || !(latest || before_update)) {
     LogOverlays("draw step: not recorded (last updated on tick {})", g_overlay_tick);
     return;
   }
@@ -1099,7 +1186,7 @@ constexpr uint32_t kMaxSprites = 500;
 constexpr float kMaxSpriteStep = 10.0f;
 
 bool BlendSprites() {
-  return REXCVAR_GET(subtick) && subtick::GameMessages_InRace();
+  return SBX_GET(subtick) && subtick::GameMessages_InRace();
 }
 
 float SpriteProgress() {
@@ -1294,8 +1381,10 @@ extern "C" REX_FUNC(sub_8212BDA0) {
   }
 }
 
-// The rival intro cutscene (Update handler 0x82157948, a jump to sub_821573E0).
-// It steps the cutscene and, deep inside (sub_82153A10), draws the rival's logo
+// RaceCamera::Update (sub_821573E0, from the race mode's Update handler
+// 0x82157948, a jump to it; game/race_camera.cpp). In the rival intro
+// cutscene it steps the scripted camera and, deep inside (sub_82153A10),
+// draws the rival's logo
 // with sub_8220F7B0 (r3 = the logo's movie entry), which advances and draws the
 // logo's UI movie. Update is skipped on render-only passes, so the logo showed on
 // logic passes only (flicker). With --redraw_rival_logo, render-only passes
@@ -1325,7 +1414,7 @@ extern "C" REX_FUNC(sub_821573E0) {
   if (!RenderOnly()) {
     g_rival_logo = 0;
     g_in_rival_cutscene = true;
-    __imp__sub_821573E0(ctx, base);
+    hooks::NativeRaceCamera_Update(ctx, base);
     g_in_rival_cutscene = false;
     return;
   }
@@ -1357,9 +1446,9 @@ extern "C" REX_FUNC(sub_821573E0) {
 // back after, so the needles move once a tick as on the 360 (as ITC-Recomp's
 // --native_cockpit_dials keeps its gauges); the car under them is still
 // blended.
-REXCVAR_DEFINE_BOOL(per_tick_cockpit_dials, true, "SBX",
-                    "Pose the cockpit dials' needles from the logic pass's gauge values on "
-                    "render-only passes (above 30 fps they flipped between their ends)");
+SBX_SETTING_BOOL(per_tick_cockpit_dials, true, "Hooks", "Fixes: Interpolation",
+                 "Pose the cockpit dials' needles from the logic pass's gauge values on "
+                 "render-only passes (above 30 fps they flipped between their ends)");
 
 namespace {
 constexpr std::array<uint32_t, 6> kDialGaugeOffsets = {696, 700, 704, 712, 716, 720};
@@ -1419,7 +1508,7 @@ class HoldDialGauges {
 HoldDialGauges g_dial_gauges;
 
 bool HoldDials() {
-  return REXCVAR_GET(subtick) && REXCVAR_GET(per_tick_cockpit_dials);
+  return SBX_GET(subtick) && SBX_GET(per_tick_cockpit_dials);
 }
 }  // namespace
 

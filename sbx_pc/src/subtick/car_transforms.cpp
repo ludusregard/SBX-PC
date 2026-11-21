@@ -25,8 +25,12 @@
 // race is matched by its order within the main loop pass, the logic pass
 // records what each call is given, and on every pass a call given exactly the
 // tick's values builds the view from the blend instead. Calls given anything
-// else are left alone. A cut (the camera breaking from its motion: CameraCut)
-// isn't blended.
+// else are left alone. A cut isn't blended: one of the game's own camera
+// switches (CarTransforms_GameCameraCut, from subtick/camera_cuts.cpp).
+// (A motion test, the camera breaking from its motion, was the fallback for
+// switches the game doesn't report until 2026-11-18: it cut where nothing
+// switched, such as unpausing at speed, which made the car jitter for a
+// tick, and didn't catch the garage's switches.)
 // (Only pass 0 was blended at first: the mirror then drew the blended cars
 // from the tick's camera, and they juddered in it as they used to on screen.)
 //
@@ -55,11 +59,12 @@
 
 #include "subtick/car_transforms.h"
 
+#include "base/settings.h"
+#include "hooks/native_calls.h"
 #include "subtick/frame_pacer.h"
 #include "subtick/game_messages.h"
 
 #include <fmt/format.h>
-#include <rex/cvar.h>
 #include <rex/logging.h>
 
 #include <algorithm>
@@ -70,12 +75,18 @@
 #include <string>
 #include <vector>
 
-REXCVAR_DECLARE(bool, subtick);
+SBX_SETTING_DECLARE(bool, subtick);
 
-REXCVAR_DEFINE_BOOL(log_record_matrix, false, "SBX",
-                    "Log the first 40 view-projections the recorder draws with (which camera the race world uses)");
-REXCVAR_DEFINE_INT32(camera_fov, 0, "SBX",
-                     "Vertical field of view of the main camera, in degrees (10 to 170); 0 is the game's own");
+SBX_SETTING_BOOL(log_record_matrix, false, "Logging", "Debugging",
+                 "Log the first 40 view-projections the recorder draws with (which camera the race world uses)");
+SBX_SETTING_BOOL(subtick_camera_cuts, true, "Graphics", "Frame Rate",
+                 "Don't blend the camera across the game's own camera switches: a mode "
+                 "change (the view button, the race start), the chase camera's reset, a TV "
+                 "camera change, a scripted camera's shot change (subtick/camera_cuts.cpp)");
+SBX_SETTING_BOOL(log_camera_cuts, false, "Logging", "Game",
+                 "Log each camera cut and the game's switch that made it");
+SBX_SETTING_INT(camera_fov, 0, "Graphics", "Camera",
+                "Vertical field of view of the main camera, in degrees (10 to 170); 0 is the game's own");
 
 namespace subtick {
 
@@ -101,51 +112,25 @@ struct CameraPose {
   float prev[kCameraFloats] = {};
   float cur[kCameraFloats] = {};
   uint64_t tick = ~0ull;
-  // The eye's and the target's move over the tick before, once known (not
-  // on the tick after a cut or a gap).
-  float move[8] = {};
-  bool has_move = false;
+  // The last of the game's camera cuts (g_game_cuts) this pose has taken.
+  uint64_t game_cut = 0;
 };
 
-float Distance3(const float* a, const float* b);
-
-// A camera cut between ticks: the eye or the target breaking from the way it
-// was moving. The move this tick is set against the move the tick before; a
-// difference over 1 m, or over half the move before (a fast camera moves
-// more each tick), is a cut: the view button (cockpit, dash, chase), a
-// demo's camera change, a menu's camera jumping to another place. A camera
-// moving fast but smoothly (the demo's fly-bys, a car at speed) isn't. (A
-// distance test cut those: 2026-11-11.)
-constexpr float kCutBreak = 1.0f;
-constexpr float kCutBreakShare = 0.5f;
-
-bool CameraCut(const CameraPose& pose, const float* now, float* move) {
-  bool cut = false;
-  if (!pose.has_move) {
-    for (int part = 0; part < 2; part++) {
-      for (int i = 0; i < 3; i++) {
-        move[4 * part + i] = now[4 * part + i] - pose.cur[4 * part + i];
-      }
-    }
-    return false;
-  }
-  for (int part = 0; part < 2; part++) {  // the eye (0-2), the target (4-6)
-    float* m = move + 4 * part;
-    const float* before = pose.move + 4 * part;
-    float change[3];
-    for (int i = 0; i < 3; i++) {
-      m[i] = now[4 * part + i] - pose.cur[4 * part + i];
-      change[i] = m[i] - before[i];
-    }
-    m[3] = 0.0f;
-    const float zero[3] = {};
-    const float limit = std::max(kCutBreak, kCutBreakShare * Distance3(before, zero));
-    if (Distance3(change, zero) > limit) {
-      cut = true;
-    }
-  }
-  return cut;
-}
+// The game's camera switches (CarTransforms_GameCameraCut), counted. Each
+// pose takes a new one as a cut at its next record, so a pose recorded
+// before the switch in its tick is cut on the tick its new values show.
+uint64_t g_game_cuts = 0;
+const char* g_game_cut_reason = "";
+// Cuts of the main camera (pass 0 in a race, the garage's in the menus):
+// counted, and the last tick with one, for the effects that
+// keep frames (CarTransforms_CameraCutSerial, _CameraCutThisTick). A pass
+// updated before the switch in its tick is cut a tick later (its values
+// change then), so a switch can make two ticks in a row with a cut.
+uint64_t g_view_cuts = 0;
+uint64_t g_view_cut_tick = ~0ull;
+uint64_t g_game_cut_tick = ~0ull;  // the last tick the game reported a switch
+int g_logged_cuts = 0;
+constexpr int kMaxLoggedCuts = 400;
 
 // One camera pass.
 struct Camera {
@@ -247,11 +232,11 @@ void Blend(const float* a, const float* b, float t, float* out) {
 }
 
 bool CarsEnabled() {
-  return REXCVAR_GET(subtick);
+  return SBX_GET(subtick);
 }
 
 bool CameraEnabled() {
-  return REXCVAR_GET(subtick) && (GameMessages_InRace() || g_in_menu_stage);
+  return SBX_GET(subtick) && (GameMessages_InRace() || g_in_menu_stage);
 }
 
 // The frame's progress through the tick, fixed for the whole pass.
@@ -305,15 +290,22 @@ void CameraBegin(uint8_t* base, uint32_t address) {
   }
   if (!GameMessages_IsRenderOnlyPass() && pose.tick != tick) {
     bool consecutive = pose.tick + 1 == tick;
-    float move[8] = {};
-    bool cut = consecutive && CameraCut(pose, now, move);
+    const bool game_cut = pose.game_cut != g_game_cuts && SBX_GET(subtick_camera_cuts);
+    pose.game_cut = g_game_cuts;
+    const bool cut = consecutive && game_cut;
+    if (cut && (address == kCameraPasses || g_in_menu_stage)) {
+      g_view_cuts++;
+      g_view_cut_tick = tick;
+    }
+    if (cut && SBX_GET(log_camera_cuts) && g_logged_cuts < kMaxLoggedCuts) {
+      g_logged_cuts++;
+      REXLOG_INFO("camera cut, pass {:08X} call {}, tick {}: {}", address, call, tick,
+                  g_game_cut_reason);
+    }
     if (consecutive && !cut) {
       std::copy(pose.cur, pose.cur + kCameraFloats, pose.prev);
-      std::copy(move, move + 8, pose.move);
-      pose.has_move = true;
     } else {
       std::copy(now, now + kCameraFloats, pose.prev);
-      pose.has_move = false;
     }
     std::copy(now, now + kCameraFloats, pose.cur);
     pose.tick = tick;
@@ -397,7 +389,7 @@ void MainCameraFov(uint8_t* base, uint32_t address) {
     g_main_fov.game_p00 = p00;
     g_main_fov.game_p11 = p11;
   }
-  int degrees = REXCVAR_GET(camera_fov);
+  int degrees = SBX_GET(camera_fov);
   float new_p00 = g_main_fov.game_p00;
   float new_p11 = g_main_fov.game_p11;
   if (degrees >= 10 && degrees <= 170) {
@@ -613,6 +605,21 @@ void CarTransforms_CameraBegin(uint8_t* base, uint32_t address) {
   CameraBegin(base, address);
 }
 
+uint64_t CarTransforms_CameraCutSerial() {
+  return g_view_cuts;
+}
+
+bool CarTransforms_CameraCutThisTick() {
+  const uint64_t tick = GetFramePacer().TicksReleased();
+  return g_view_cut_tick == tick || g_game_cut_tick == tick;
+}
+
+void CarTransforms_GameCameraCut(const char* reason) {
+  g_game_cuts++;
+  g_game_cut_reason = reason;
+  g_game_cut_tick = GetFramePacer().TicksReleased();
+}
+
 void CarTransforms_CameraFov(uint8_t* base, uint32_t address) {
   MainCameraFov(base, address);
 }
@@ -640,7 +647,7 @@ extern "C" REX_FUNC(sub_820A3B98) {
 // camera pass's view-projection (and which), the caller, and the first row.
 extern "C" REX_FUNC(sub_8257ACD0) {
   REX_FUNC_PROLOGUE();
-  if (REXCVAR_GET(log_record_matrix)) {
+  if (SBX_GET(log_record_matrix)) {
     static std::set<uint32_t> seen;
     uint32_t matrix = ctx.r4.u32;
     if (seen.size() < 40 && seen.insert(matrix).second) {
@@ -655,5 +662,5 @@ extern "C" REX_FUNC(sub_8257ACD0) {
                   guest::LoadFloat(base, matrix + 12));
     }
   }
-  __imp__sub_8257ACD0(ctx, base);
+  hooks::NativeSceneryLists_RecordObject(ctx, base);  // Our C++ (--native_scenery_lists)
 }

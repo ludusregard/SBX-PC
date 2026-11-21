@@ -1,10 +1,10 @@
 # Shutokō Battle X PC
 
 A PC port of *Shutokō Battle X* (Xbox 360, 2006) for Windows and
-Linux. It has ReXGlue roots [ReXGlue](https://github.com/rexglue/rexglue-sdk),
-but the game is being rewritten subsystem by substem for modding and extendabillity.
+Linux. It has [ReXGlue](https://github.com/rexglue/rexglue-sdk) roots,
+but the game is being rewritten subsystem by subsystem for modding and extendability.
 [ITC-Recomp](https://github.com/Spooky098529/ITC-Recomp), the recompilation
-of the game's US release, *Import Tuner Challenge* has been pulled at times to helped
+of the game's US release, *Import Tuner Challenge*, has been pulled at times to help
 with progress.
 
 This project was built with assistance of Claude with manual review and testing done by myself.
@@ -17,8 +17,8 @@ Much of the research into the game was being done by myself and the community pr
 
 - **Fix for the black screen after quest races** (on by default;
   `--post_race_check_cycles=60` puts back the game's wait).
-- **Unlocked Frame Rate**: game logic is 30hz still but rendering is unlocked.
-- **Unlocked Resolution**: Play in 4k! (aspect ratio is still forced 16:9)
+- **Unlocked Frame Rate**: game logic is still 30 Hz but rendering is unlocked.
+- **Unlocked Resolution**: Play in 4K! (aspect ratio is still forced 16:9)
 - **HD Menu Text** (more menu redraws in the works)
 - **Additional Anti-Aliasing**: toggle options for CMAA2 and FXAA
 - **Patch Loader**: game archive files are replaced by loose files in
@@ -34,7 +34,7 @@ Much of the research into the game was being done by myself and the community pr
 
 ## Requirements
 
-- Windows 10 or 11 on a 64-bit x86 CPU with SSE4.2.
+- Windows 10 or 11, or Linux, on a 64-bit x86 CPU with SSE4.2.
 - Your own copy of the game, extracted from a backup.
 
 ## Install
@@ -44,7 +44,7 @@ to package it in `sbx_pc\release\`: a Windows `.zip`, a Linux `.tar.gz`
 (when the Linux build exists) and an assets `.zip`. The packages hold the
 program only, with no game files. The game's files go in
 `assets/` (`default.xex` and `DATA/`); `assets/PATCH_DATA/` (replacements)
-and `assets/ADDON_DATA/` (new content, not used yet) are part of this repo.
+and `assets/ADDON_DATA/` (new content: custom music, languages) are part of this repo.
 
 ## Settings
 
@@ -56,7 +56,7 @@ command line win over it.
 
 ## Reporting problems
 
-Play with `run.bat --log_level=debug`, then open an issue describing what you saw, and
+Play with `run_vulkan.bat --log_level=debug`, then open an issue describing what you saw, and
 attach the newest file from the `logs` folder. My messages are always open so don't
 hesitate to shoot me a message on Discord or any socials if you have issues/feedback.
 
@@ -94,7 +94,7 @@ Both builds share `sbx_pc/generated/` and need the game's
 
 ## Credits and links
 
-- [Shutokō Battle X Restored](https://github.com/ludusregard/Shutokō-Battle-X-Restored):
+- [Shutokō Battle X Restored](https://github.com/ludusregard/Shutoko-Battle-X-Restored):
   the English relocalization of the game.
 - [GUT Archive Tools](https://github.com/igorciz777/GUTArchiveTools) by
   igorciz777: the extractor for Genki's GUT archives (`BUILD.DAT` and
@@ -103,7 +103,7 @@ Both builds share `sbx_pc/generated/` and need the game's
   by JakeMR2: Cheat Engine tables, ImHex patterns and notes on the earlier
   Tokyo Xtreme Racer and Kaido Battle games, which helped work out the car
   specs.
-- [Shutokōu Battle Discord](https://discord.gg/n4FvF3VkHQ): the series'
+- [Shutokō Battle Discord](https://discord.gg/n4FvF3VkHQ): the series'
   community, for support and feedback.
 
 ## Documentation (This is written by LLMs primarily for LLMs)
@@ -116,6 +116,8 @@ Both builds share `sbx_pc/generated/` and need the game's
   experiments, and what's next.
 - [docs/game_data.md](docs/game_data.md): what's known about the game's
   data files.
+- [docs/shaders.md](docs/shaders.md): the game's shaders, rewritten as
+  GLSL.
 - [docs/codegen.md](docs/codegen.md): how the recompiled code is
   generated, and the Windows build.
 - [docs/porting-from-itc.md](docs/porting-from-itc.md): how ITC-Recomp's

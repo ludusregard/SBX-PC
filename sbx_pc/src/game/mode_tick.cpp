@@ -1,20 +1,19 @@
 // The modes' tick helpers as our own C++ (--native_mode_tick, on by
 // default): the screen fades' set-up and the players' input blocked.
 
+#include "base/settings.h"
 #include "game/menu.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_mode_tick, true, "SBX",
-                    "Our own C++ for the screen fades' set-up and the players' input blocked "
-                    "instead of the recompiled functions");
+SBX_SETTING_BOOL(native_mode_tick, true, "Overrides", "Race",
+                 "Our own C++ for the screen fades' set-up and the players' input blocked "
+                 "instead of the recompiled functions");
 
 namespace {
 
 // The screen fades' 16 words.
 constexpr uint32_t kScreenFades = 0x82694D8C;
 
-bool On() { return REXCVAR_GET(native_mode_tick); }
+bool On() { return SBX_GET(native_mode_tick); }
 
 }  // namespace
 

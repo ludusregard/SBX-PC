@@ -11,11 +11,10 @@
 // lights pass. The lights that do are then merged and sorted one by one as
 // the original does.
 
+#include "base/settings.h"
 #include "game/data_file.h"
 #include "game/lights.h"
 #include "game/math.h"
-
-#include <rex/cvar.h>
 
 #include <smmintrin.h>
 
@@ -23,9 +22,9 @@
 #include <iterator>
 #include <utility>
 
-REXCVAR_DEFINE_BOOL(native_nearest_lights, true, "SBX",
-                    "Our own C++ for Lights::FindNearest (the course lights nearest a car) "
-                    "instead of the recompiled function");
+SBX_SETTING_BOOL(native_nearest_lights, true, "Overrides", "Race",
+                 "Our own C++ for Lights::FindNearest (the course lights nearest a car) "
+                 "instead of the recompiled function");
 
 namespace {
 
@@ -241,7 +240,7 @@ extern "C" REX_FUNC(sub_820F3FF8) {
   ctx.fpscr.disableFlushMode();
   // The original compares in double what's made here in float: the caller
   // passes floats, but anything else goes to the original.
-  if (!REXCVAR_GET(native_nearest_lights) || !IsFloat(ctx.f2.f64) || !IsFloat(ctx.f3.f64))
+  if (!SBX_GET(native_nearest_lights) || !IsFloat(ctx.f2.f64) || !IsFloat(ctx.f3.f64))
       [[unlikely]] {
     __imp__sub_820F3FF8(ctx, base);
     return;

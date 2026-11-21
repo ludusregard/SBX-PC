@@ -2,13 +2,12 @@
 // the input processors' and the logical and physical pads' constructors,
 // and the pads' values.
 
+#include "base/settings.h"
 #include "game/math.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_input, true, "SBX",
-                    "Our own C++ for the input processors' and pads' constructors and the "
-                    "pads' values instead of the recompiled functions");
+SBX_SETTING_BOOL(native_input, true, "Overrides", "Runtime",
+                 "Our own C++ for the input processors' and pads' constructors and the "
+                 "pads' values instead of the recompiled functions");
 
 namespace {
 
@@ -57,7 +56,7 @@ struct PhysicalPad {
 };
 GUEST_OFFSET(PhysicalPad, unknown_168, 168);
 
-bool On() { return REXCVAR_GET(native_input); }
+bool On() { return SBX_GET(native_input); }
 
 void ConstructProcessorBase(InputProcessor* processor) {
   processor->vtable = kInputProcessorBaseVtable;

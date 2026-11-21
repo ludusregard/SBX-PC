@@ -67,7 +67,7 @@ for f in files:
     # strip overrides and Fill tables
     rest=re.sub(r'extern "C" REX_FUNC\(sub_[0-9A-F]{8}\) \{\n.*?^\}', '', s, flags=re.S|re.M)
     rest=re.sub(r'constexpr Fill \w+\[\] = \{.*?\};', '', rest, flags=re.S)
-    rest=re.sub(r'//[^\n]*|REXCVAR_DEFINE_BOOL\(.*?\);|#include[^\n]*|__imp__sub_\w+|sub_[0-9A-F]{8}', '', rest, flags=re.S)
+    rest=re.sub(r'//[^\n]*|REXCVAR_DEFINE_BOOL\(.*?\);|SBX_SETTING_\w+\(.*?\);|#include[^\n]*|__imp__sub_\w+|sub_[0-9A-F]{8}', '', rest, flags=re.S)
     lits=set(int(n,0) for n in re.findall(r'(?<![\w.])(0x[0-9A-Fa-f]+|\d+)(?:u|ull|ULL|U|f)?(?![\w.])',rest))
     bad=sorted(n for n in lits if n>8 and n not in ac and (n|0xFFFF0000) not in ac and ((-n)&0xFFFFFFFF) not in ac)
     if bad: print(f,[hex(b) if b>0xFFFF else b for b in bad])

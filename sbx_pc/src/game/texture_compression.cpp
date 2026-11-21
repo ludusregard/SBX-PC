@@ -2,13 +2,12 @@
 // (--native_texture_compression, on by default): the blitter's constructor
 // and the image codec's destructor. The encoders stay recompiled.
 
+#include "base/settings.h"
 #include "game/guest_types.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_texture_compression, true, "SBX",
-                    "Our own C++ for the blitter's constructor and the image codec's "
-                    "destructor instead of the recompiled functions");
+SBX_SETTING_BOOL(native_texture_compression, true, "Overrides", "Scene",
+                 "Our own C++ for the blitter's constructor and the image codec's "
+                 "destructor instead of the recompiled functions");
 
 namespace {
 
@@ -31,7 +30,7 @@ struct ImageCodec {
 };
 GUEST_OFFSET(ImageCodec, buffer_88, 88);
 
-bool On() { return REXCVAR_GET(native_texture_compression); }
+bool On() { return SBX_GET(native_texture_compression); }
 
 }  // namespace
 

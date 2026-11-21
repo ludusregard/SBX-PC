@@ -1,20 +1,20 @@
 // The race sounds' handlers as our own C++ (--native_race_sounds, on by
 // default): the listener's set-up through the sound manager, and the
 // handlers the race's messages call (the countdowns, the rolling start, the
-// next stage, an abort, leaving after the race): the music's volume put
-// back, the effects' volume, the state's bits, and the music picked. The
-// volumes are the options' (writable, read each time). The sound manager's
-// slots, the music's stop and pick, the cars' sounds and the ticks stay
-// recompiled.
+// next stage, an abort, leaving after the race): the music change asked
+// for, the effects' level put back, the state's bits, and the music picked.
+// The levels are globals (writable, read each time). The sound manager's
+// slots, the cars' sounds, the music pick and the ticks stay recompiled.
+// docs/audio.md, "The race sounds".
 
 #include "game/race_sounds.h"
 
-#include <rex/cvar.h>
+#include "base/settings.h"
 
-REXCVAR_DEFINE_BOOL(native_race_sounds, true, "SBX",
-                    "Our own C++ for the race sounds' handlers (the listener, the countdowns, "
-                    "the rolling start, the next stage, an abort, leaving after the race) "
-                    "instead of the recompiled functions; the sounds' ticks stay recompiled");
+SBX_SETTING_BOOL(native_race_sounds, true, "Overrides", "Race",
+                 "Our own C++ for the race sounds' handlers (the listener, the countdowns, "
+                 "the rolling start, the next stage, an abort, leaving after the race) "
+                 "instead of the recompiled functions; the sounds' ticks stay recompiled");
 
 namespace {
 
@@ -24,16 +24,16 @@ using guest::At;
 using guest::Guest;
 using guest::u32_be;
 
-bool On() { return REXCVAR_GET(native_race_sounds); }
+bool On() { return SBX_GET(native_race_sounds); }
 
 // Writable globals.
 constexpr uint32_t kSoundManager = 0x826B5960;     // [it] the AudioManager
-constexpr uint32_t kMusicPlayer = 0x826B591C;      // [it] the music player
-constexpr uint32_t kMusicVolume = 0x82606B74;      // the option's
-constexpr uint32_t kMusicVolumeNow = 0x82606BBC;   // its working copy
-constexpr uint32_t kEffectsVolumeNow = 0x82606BC0;
-constexpr uint32_t kEffectsVolume = 0x82606BC4;    // the option's
-constexpr uint32_t kMusicFlag = 0x826B5964;        // a byte
+constexpr uint32_t kCarSounds = 0x826B591C;        // [it] the seven car audio objects
+constexpr uint32_t kMusicLevel = 0x82606B74;       // now (the option sets it)
+constexpr uint32_t kMusicLevelSaved = 0x82606BBC;  // the fade's starting level
+constexpr uint32_t kEffectsLevel = 0x82606BC0;     // now (the cars)
+constexpr uint32_t kEffectsOption = 0x82606BC4;    // the option's
+constexpr uint32_t kMusicFading = 0x826B5964;      // a byte
 constexpr uint32_t kEffectsBankLoaded = 0x826C7E70;
 
 u32_be& Global(uint32_t address) { return *At<u32_be>(address); }
@@ -42,20 +42,22 @@ void SetState(RaceSounds* sounds, uint32_t clear, uint32_t set) {
   sounds->state = (sounds->state & ~clear) | set;
 }
 
-// The music's volume back to the option's, its flag cleared, the state's
-// music-paused bit cleared and `bits` set.
-void RestoreMusic(RaceSounds* sounds, uint32_t bits) {
-  Global(kMusicVolumeNow) = Global(kMusicVolume);
-  *At<uint8_t>(kMusicFlag) = 0;
-  SetState(sounds, RaceSounds::kMusicPaused, bits);
+// A music change asked for: the fade's starting level saved, the fading
+// flag cleared, the music-started bit cleared and `bits` set (the change
+// bit, with or without the cars held). The tick does the rest.
+void RequestMusicChange(RaceSounds* sounds, uint32_t bits) {
+  Global(kMusicLevelSaved) = Global(kMusicLevel);
+  *At<uint8_t>(kMusicFading) = 0;
+  SetState(sounds, RaceSounds::kMusicStarted, bits);
 }
 
-// The effects' working volume back to the option's.
-void RestoreEffects() { Global(kEffectsVolumeNow) = Global(kEffectsVolume); }
+// The effects' level back to the option's.
+void RestoreEffects() { Global(kEffectsLevel) = Global(kEffectsOption); }
 
-// The music stopped (sub_8210FEC0) and the rival music picked
-// (sub_821743B0), on the race sounds.
-void StopMusic(Guest& g, RaceSounds* sounds) { g.Call(sub_8210FEC0, sounds); }
+// Every car's sounds stopped (CarSounds::StopAll, sub_8210FEC0; it takes no
+// argument, r3 is left as it was) and the rival music picked (sub_821743B0),
+// on the race sounds.
+void StopCars(Guest& g, RaceSounds* sounds) { g.Call(sub_8210FEC0, sounds); }
 void PickMusic(Guest& g, RaceSounds* sounds) { g.Call(sub_821743B0, sounds); }
 
 }  // namespace
@@ -68,12 +70,14 @@ void PickMusic(Guest& g, RaceSounds* sounds) { g.Call(sub_821743B0, sounds); }
   }                                    \
   Guest g(ctx, base);
 
-// RaceSounds::ResumeCars: the music player's sub_8210E440, once for each of
-// the seven cars (the player read each time).
+// RaceSounds::ResumeCars: CarSound::ResumeAll (sub_8210E440) seven times,
+// as the original does, on car slot 0 each time (not on each slot); the
+// other cars' voices restart from their update. The pointer is read each
+// time.
 extern "C" REX_FUNC(sub_82173B18) {
   SBX_RACE_SOUNDS_FALLBACK(sub_82173B18)
   for (int i = 0; i < 7; i++) {
-    g.Call(sub_8210E440, Global(kMusicPlayer));
+    g.Call(sub_8210E440, Global(kCarSounds));
   }
 }
 
@@ -94,14 +98,14 @@ extern "C" REX_FUNC(sub_82173760) {
   g.CallVirtual(manager(), 27, d);
 }
 
-// RaceSounds::OnStageCountdown: the effects' volume back, the cars set
-// up, the rolling start's music bit cleared.
+// RaceSounds::OnStageCountdown: the effects' level back, the cars to be
+// built, the cars no longer held.
 extern "C" REX_FUNC(sub_82173BE0) {
   SBX_RACE_SOUNDS_FALLBACK(sub_82173BE0)
   RaceSounds* sounds = At<RaceSounds>(ctx.r3.u32);
   RestoreEffects();
   sounds->cars_set_up = 1;
-  SetState(sounds, RaceSounds::kRollingStartMusic, 0);
+  SetState(sounds, RaceSounds::kCarsHeld, 0);
 }
 
 // RaceSounds::OnAbortDone: the same, the volume last.
@@ -109,73 +113,74 @@ extern "C" REX_FUNC(sub_82173BB8) {
   SBX_RACE_SOUNDS_FALLBACK(sub_82173BB8)
   RaceSounds* sounds = At<RaceSounds>(ctx.r3.u32);
   sounds->cars_set_up = 1;
-  SetState(sounds, RaceSounds::kRollingStartMusic, 0);
+  SetState(sounds, RaceSounds::kCarsHeld, 0);
   RestoreEffects();
 }
 
-// RaceSounds::OnRollingStartDone: during the rolling start and before its
-// music, the music stopped, its bit set and the stopped bit cleared; then
-// the cars set up and the rolling start's music bit cleared.
+// RaceSounds::OnRollingStartDone: with the cars built and not held, every
+// car's sounds stopped (the held bit set, bit 0x10000 cleared); then the
+// cars to be built again and no longer held.
 extern "C" REX_FUNC(sub_82173C08) {
   SBX_RACE_SOUNDS_FALLBACK(sub_82173C08)
   RaceSounds* sounds = At<RaceSounds>(ctx.r3.u32);
   const uint32_t state = sounds->state;
-  if ((state & RaceSounds::kRollingStart) && !(state & RaceSounds::kRollingStartMusic)) {
-    StopMusic(g, sounds);
-    SetState(sounds, RaceSounds::kMusicStopped, RaceSounds::kRollingStartMusic);
+  if ((state & RaceSounds::kCarsBuilt) && !(state & RaceSounds::kCarsHeld)) {
+    StopCars(g, sounds);
+    SetState(sounds, RaceSounds::kBit10000, RaceSounds::kCarsHeld);
   }
-  const uint32_t now = sounds->state & ~RaceSounds::kRollingStartMusic;
+  const uint32_t now = sounds->state & ~RaceSounds::kCarsHeld;
   sounds->cars_set_up = 1;
   sounds->state = now;
 }
 
-// RaceSounds::OnCountdown: the music player's sub_8210FFA0, the music
-// back, the rival music picked.
+// RaceSounds::OnCountdown: CarSound::Update (sub_8210FFA0) on car slot 0,
+// a music change asked for, the rival music picked.
 extern "C" REX_FUNC(sub_82174828) {
   SBX_RACE_SOUNDS_FALLBACK(sub_82174828)
   RaceSounds* sounds = At<RaceSounds>(ctx.r3.u32);
-  g.Call(sub_8210FFA0, Global(kMusicPlayer));
-  RestoreMusic(sounds, RaceSounds::kMusicBack);
+  g.Call(sub_8210FFA0, Global(kCarSounds));
+  RequestMusicChange(sounds, RaceSounds::kMusicChange);
   PickMusic(g, sounds);
 }
 
-// RaceSounds::OnLeaveAfterRace: the cars' sounds updated (sub_82173DE0),
-// the music back, the effects' volume back.
+// RaceSounds::OnLeaveAfterRace: the cars' tick (CarSounds::Tick,
+// sub_82173DE0), a music change asked for, the effects' level back.
 extern "C" REX_FUNC(sub_82174D20) {
   SBX_RACE_SOUNDS_FALLBACK(sub_82174D20)
   RaceSounds* sounds = At<RaceSounds>(ctx.r3.u32);
   g.Call(sub_82173DE0, sounds);
-  RestoreMusic(sounds, RaceSounds::kMusicBack);
+  RequestMusicChange(sounds, RaceSounds::kMusicChange);
   RestoreEffects();
 }
 
-// RaceSounds::OnNextStage: the music stopped, back (with the rolling
-// start's bit), the rival music picked.
+// RaceSounds::OnNextStage: every car's sounds stopped, a music change
+// asked for with the cars held, the rival music picked.
 extern "C" REX_FUNC(sub_82174D88) {
   SBX_RACE_SOUNDS_FALLBACK(sub_82174D88)
   RaceSounds* sounds = At<RaceSounds>(ctx.r3.u32);
-  StopMusic(g, sounds);
-  RestoreMusic(sounds, RaceSounds::kMusicBack | RaceSounds::kRollingStartMusic);
+  StopCars(g, sounds);
+  RequestMusicChange(sounds, RaceSounds::kMusicChange | RaceSounds::kCarsHeld);
   PickMusic(g, sounds);
 }
 
-// RaceSounds::OnAbort: the music stopped and back (with the rolling start's
-// bit).
+// RaceSounds::OnAbort: every car's sounds stopped, a music change asked for
+// with the cars held.
 extern "C" REX_FUNC(sub_82173B60) {
   SBX_RACE_SOUNDS_FALLBACK(sub_82173B60)
   RaceSounds* sounds = At<RaceSounds>(ctx.r3.u32);
-  StopMusic(g, sounds);
-  RestoreMusic(sounds, RaceSounds::kMusicBack | RaceSounds::kRollingStartMusic);
+  StopCars(g, sounds);
+  RequestMusicChange(sounds, RaceSounds::kMusicChange | RaceSounds::kCarsHeld);
 }
 
-// RaceSounds::OnRollingStart: the cars' sounds set up (sub_82174048) when
-// they're marked so, the music back, the rival music picked.
+// RaceSounds::OnRollingStart: the cars built (CarSounds::Build,
+// sub_82174048) when they're to be, a music change asked for, the rival
+// music picked.
 extern "C" REX_FUNC(sub_82174F80) {
   SBX_RACE_SOUNDS_FALLBACK(sub_82174F80)
   RaceSounds* sounds = At<RaceSounds>(ctx.r3.u32);
   if (sounds->cars_set_up == 1) {
     g.Call(sub_82174048, sounds);
   }
-  RestoreMusic(sounds, RaceSounds::kMusicBack);
+  RequestMusicChange(sounds, RaceSounds::kMusicChange);
   PickMusic(g, sounds);
 }

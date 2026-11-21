@@ -1,13 +1,12 @@
 // The front end's car draw as our own C++ (--native_front_end_car_draw, on
 // by default): the license plates shown and hidden.
 
+#include "base/settings.h"
 #include "game/guest_types.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_front_end_car_draw, true, "SBX",
-                    "Our own C++ for the front end car's plates shown and hidden instead of "
-                    "the recompiled functions");
+SBX_SETTING_BOOL(native_front_end_car_draw, true, "Overrides", "Cars",
+                 "Our own C++ for the front end car's plates shown and hidden instead of "
+                 "the recompiled functions");
 
 namespace {
 
@@ -27,7 +26,7 @@ void SetPlates(PPCContext& ctx, uint8_t* base, bool shown) {
   car->rear_plate_shown = shown;
 }
 
-bool On() { return REXCVAR_GET(native_front_end_car_draw); }
+bool On() { return SBX_GET(native_front_end_car_draw); }
 
 }  // namespace
 

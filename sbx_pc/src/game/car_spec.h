@@ -107,14 +107,27 @@ struct EngineStage {
 };
 GUEST_SIZE(EngineStage, 204);
 
+// A tire (21 front and 21 rear in a spec, by type and grade). Lengths in
+// meters, the rim in inches; Tire::InchUp changes the size and grip.
 struct Tire {
   uint8_t unknown_0[8];
-  u32_be words_8[10];
-  f32_be width;  // Changed by the inch-ups.
-  u32_be words_52[10];
+  u32_be unknown_8[9];
+  f32_be radius;  // The rim's radius plus the sidewall.
+  f32_be width;
+  u32_be unknown_52[3];
+  f32_be grip_forward;
+  f32_be grip_lateral;
+  u32_be unknown_72[2];
+  f32_be rim_diameter;
+  f32_be aspect_ratio;
+  f32_be rim_width;
 };
 GUEST_SIZE(Tire, 92);
+GUEST_OFFSET(Tire, radius, 44);
 GUEST_OFFSET(Tire, width, 48);
+GUEST_OFFSET(Tire, grip_forward, 64);
+GUEST_OFFSET(Tire, rim_diameter, 80);
+GUEST_OFFSET(Tire, rim_width, 88);
 
 struct Paint {
   static constexpr uint16_t kSolid = 0;
@@ -199,12 +212,18 @@ struct AeroPart36 {
 };
 GUEST_SIZE(AeroPart36, 36);
 
+// A record of table 83: ten words (all 1.0 in the data; no reader found).
+struct Record83 {
+  u32_be words[10];
+};
+GUEST_SIZE(Record83, 40);
+
 // The parameter object at [0x826B2B28] (468 bytes).
 struct CarParams {
   static constexpr int kPartTables = 9;  // Tables 74 to 82.
 
   u32_be loads_pending;
-  uint8_t unknown_4[4];
+  u32_be block;   // The one block all twelve tables are loaded into.
   u32_be wheels;  // Table 73 (SpecWheel records, 48 bytes each).
   u32_be specs;   // Table 72 (CarSpec records).
   u32_be parts[kPartTables];
@@ -215,8 +234,35 @@ struct CarParams {
   u32_be model_count;  // The last model + 1.
 };
 GUEST_SIZE(CarParams, 468);
+GUEST_OFFSET(CarParams, block, 4);
 GUEST_OFFSET(CarParams, parts, 16);
 GUEST_OFFSET(CarParams, table_83, 52);
 GUEST_OFFSET(CarParams, first_wheel_of_model, 64);
+
+struct Car;
+
+// car_specs.cpp's C++, for the boot's load and unload (data_load.cpp) and the
+// garage (car_makers.cpp).
+
+// Params::Init (sub_820C9700) and Params::Load (sub_820CC048): the
+// parameter object and its block made, then the twelve tables loaded into
+// it. Params::Free (sub_820C9B30): both freed.
+void InitCarParams(guest::Guest& g);
+void LoadCarParams(guest::Guest& g);
+void FreeCarParams(guest::Guest& g);
+
+// Params::GetCarParts (sub_820C9BA0): tables 74 to 82, at car `car`'s
+// records.
+void GetCarParts(uint32_t car, uint32_t parts[CarParams::kPartTables]);
+
+// AeroParts::Get82 (sub_820CBA30): the body kit part for `level` (1 up) of
+// the car's parts (`parts`, GetCarParts'), copied to `out` and swapped; with
+// no level, the defaults.
+void GetBodyKitPart(guest::Guest& g, AeroPart36& out, const uint32_t parts[CarParams::kPartTables],
+                    int32_t level);
+
+// Car::Refresh (sub_820C47A8): the car's working copy of its spec, tires,
+// aero parts and wheels, from the tables and its settings.
+void RefreshCar(guest::Guest& g, Car& car);
 
 }  // namespace game

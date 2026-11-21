@@ -1,20 +1,19 @@
 // The camera modes as our own C++ (--native_camera_modes, on by default):
 // the camera animations' clear and a rival logo's constructor.
 
+#include "base/settings.h"
 #include "game/race_hud.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_camera_modes, true, "SBX",
-                    "Our own C++ for the camera animations' clear and the rival logo's "
-                    "constructor instead of the recompiled functions");
+SBX_SETTING_BOOL(native_camera_modes, true, "Overrides", "Scene",
+                 "Our own C++ for the camera animations' clear and the rival logo's "
+                 "constructor instead of the recompiled functions");
 
 namespace {
 
 // The camera animation playing, if any.
 constexpr uint32_t kCameraAnimation = 0x826C7C78;
 
-bool On() { return REXCVAR_GET(native_camera_modes); }
+bool On() { return SBX_GET(native_camera_modes); }
 
 }  // namespace
 

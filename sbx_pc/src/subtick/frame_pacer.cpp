@@ -1,6 +1,6 @@
 #include "subtick/frame_pacer.h"
 
-#include <rex/cvar.h>
+#include "base/settings.h"
 
 #include <algorithm>
 #include <thread>
@@ -11,8 +11,8 @@
 #include <windows.h>
 #endif
 
-REXCVAR_DEFINE_INT32(max_fps, 0, "SBX",
-                     "With --subtick: frame rate cap (races and menus); 0 means unlimited");
+SBX_SETTING_INT(max_fps, 0, "Graphics", "Frame Rate",
+                "With --subtick: frame rate cap (races and menus); 0 means unlimited");
 
 namespace subtick {
 
@@ -101,7 +101,7 @@ float FramePacer::TickProgress() const {
 }
 
 FramePacer::Clock::duration FramePacer::FramePeriod() const {
-  int max_fps = REXCVAR_GET(max_fps);
+  int max_fps = SBX_GET(max_fps);
   if (max_fps <= 0) {
     return Clock::duration::zero();
   }

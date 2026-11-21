@@ -1,13 +1,12 @@
 // The cameras as our own C++ (--native_cameras, on by default): the camera
 // passes' set-up, a pass's enable and the viewport's update.
 
+#include "base/settings.h"
 #include "game/guest_types.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_cameras, true, "SBX",
-                    "Our own C++ for the camera passes' set-up, a pass's enable and the "
-                    "viewport's update instead of the recompiled functions");
+SBX_SETTING_BOOL(native_cameras, true, "Overrides", "Scene",
+                 "Our own C++ for the camera passes' set-up, a pass's enable and the "
+                 "viewport's update instead of the recompiled functions");
 
 namespace {
 
@@ -26,7 +25,7 @@ struct CameraPass {
 };
 GUEST_SIZE(CameraPass, 592);
 
-bool On() { return REXCVAR_GET(native_cameras); }
+bool On() { return SBX_GET(native_cameras); }
 
 }  // namespace
 

@@ -27,17 +27,17 @@
 // cars get the same rule: the ECLI 3 (17-inch), the L86, S30 and T86 4
 // (14-inch).
 
+#include "base/settings.h"
 #include "guest.h"
 
-#include <rex/cvar.h>
 #include <rex/logging.h>
 
-REXCVAR_DEFINE_BOOL(cut_car_wheels, true, "SBX",
-                    "Give the cut cars stock wheels (the ECLI its own, the L86, S30 and "
-                    "T86 the BOSS00's) and inch-ups in the wheel shop");
-REXCVAR_DEFINE_BOOL(cut_car_steelies, true, "SBX",
-                    "Give the L86, S30 and T86 the LORRY's steel wheels instead "
-                    "(needs cut_car_wheels)");
+SBX_SETTING_BOOL(cut_car_wheels, true, "Hooks", "Cars",
+                 "Give the cut cars stock wheels (the ECLI its own, the L86, S30 and "
+                 "T86 the BOSS00's) and inch-ups in the wheel shop");
+SBX_SETTING_BOOL(cut_car_steelies, true, "Hooks", "Cars",
+                 "Give the L86, S30 and T86 the LORRY's steel wheels instead "
+                 "(needs cut_car_wheels)");
 
 namespace {
 
@@ -54,7 +54,7 @@ constexpr uint32_t kT86Id = 20;
 
 bool IsSteelieBlock(int32_t block) { return block >= 20 && block <= 22; }  // L86, S30, T86.
 
-bool UseSteelies() { return REXCVAR_GET(cut_car_wheels) && REXCVAR_GET(cut_car_steelies); }
+bool UseSteelies() { return SBX_GET(cut_car_wheels) && SBX_GET(cut_car_steelies); }
 
 // After sub_820D8860 / sub_820D8900: a stock wheel on the L86, S30 or T86
 // becomes the LORRY's. second_offset: the model after the XPR2, 1 for the rim
@@ -101,7 +101,7 @@ uint32_t ShopCarId(uint8_t* base, uint32_t menu) {
 extern "C" REX_FUNC(sub_821ED5D8) {
   uint32_t menu = ctx.r3.u32;
   __imp__sub_821ED5D8(ctx, base);
-  if (!REXCVAR_GET(cut_car_wheels) || ctx.r3.u32 != 0) {
+  if (!SBX_GET(cut_car_wheels) || ctx.r3.u32 != 0) {
     return;
   }
   uint32_t car = ShopCarId(base, menu);
@@ -118,7 +118,7 @@ extern "C" REX_FUNC(sub_820D3620) {
   int32_t block = ctx.r3.s32;
   uint32_t front = ctx.r4.u32;
   uint32_t rear = ctx.r5.u32;
-  if (REXCVAR_GET(cut_car_wheels)) {
+  if (SBX_GET(cut_car_wheels)) {
     if (block == kEcliBlock || (IsSteelieBlock(block) && UseSteelies())) {
       guest::StoreU32(base, front, uint32_t(-1));
       guest::StoreU32(base, rear, uint32_t(-1));

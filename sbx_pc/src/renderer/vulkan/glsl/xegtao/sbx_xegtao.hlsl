@@ -6,7 +6,7 @@
 //
 // Every kernel shares one descriptor set layout (set 0), so each resource
 // has its own binding:
-//   1 the G-buffer's depth (R32G32F; .r is the depth as drawn)
+//   1 the view's depth (BuildDepthMotion) (R32G32F; .r is the depth as drawn)
 //   2 a point sampler, clamped
 //   3-7 the working depth's MIPs 0-4, written (r32f)
 //   8 the working depth, read (all MIPs)

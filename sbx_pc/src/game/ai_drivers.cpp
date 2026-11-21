@@ -3,13 +3,12 @@
 // skills' set-ups, and the drivers' path points destroyed. The drivers'
 // thinking stays recompiled.
 
+#include "base/settings.h"
 #include "game/math.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_ai_drivers, true, "SBX",
-                    "Our own C++ for the AI drivers' resets and set-ups instead of the "
-                    "recompiled functions");
+SBX_SETTING_BOOL(native_ai_drivers, true, "Overrides", "Race",
+                 "Our own C++ for the AI drivers' resets and set-ups instead of the "
+                 "recompiled functions");
 
 namespace {
 
@@ -157,7 +156,7 @@ constexpr uint32_t kPathPointDestructor = 0x821611F0;  // An empty one.
 constexpr uint32_t kDriverCallback = 0x82138C58;
 constexpr uint32_t kPathCallback = 0x82139ED8;
 
-bool On() { return REXCVAR_GET(native_ai_drivers); }
+bool On() { return SBX_GET(native_ai_drivers); }
 
 void ClearCarInput(CarInput* input) {
   input->throttle = 0;

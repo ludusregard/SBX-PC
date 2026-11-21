@@ -20,15 +20,15 @@
 //
 // --unlock_cut_cars=false turns it off.
 
+#include "base/settings.h"
 #include "guest.h"
 #include "hooks/native_calls.h"
 
-#include <rex/cvar.h>
 #include <rex/logging.h>
 
-REXCVAR_DEFINE_BOOL(unlock_cut_cars, true, "SBX",
-                    "The cut cars (ECLI, S30, L86, T86) are offered from the "
-                    "start of a new game (experimental)");
+SBX_SETTING_BOOL(unlock_cut_cars, true, "Hooks", "Cars",
+                 "The cut cars (ECLI, S30, L86, T86) are offered from the "
+                 "start of a new game (experimental)");
 
 namespace {
 
@@ -42,7 +42,7 @@ constexpr uint32_t kT86 = 20;
 constexpr uint32_t kCutCars = (1u << kEcli) | (1u << kS30) | (1u << kL86) | (1u << kT86);
 
 void UnlockCutCars(uint8_t* base, uint32_t save) {
-  if (!REXCVAR_GET(unlock_cut_cars) || save == 0) {
+  if (!SBX_GET(unlock_cut_cars) || save == 0) {
     return;
   }
   uint32_t address = save + kCarUnlockBits;

@@ -25,8 +25,8 @@
 #include "renderer/renderer.h"
 #include "renderer/state.h"
 
-#include "base/flags.h"
 #include "base/log.h"
+#include "base/settings.h"
 
 #include <array>
 #include <chrono>
@@ -36,13 +36,15 @@
 #include <string>
 #include <vector>
 
-ITC_FLAG_BOOL(native_renderer_check_draw_writes, false, "SBX",
-              "Log the device fields the graphics library's draw and its packet-writing "
-              "helpers change besides the command buffer (a debugging aid for the native "
-              "renderer's exclusive mode; keeps the library's draw)");
-ITC_FLAG_BOOL(native_renderer_library_packets, true, "SBX",
-              "In exclusive mode, let the graphics library write its GPU packets for "
-              "indexed draws as before (nothing reads them)");
+#include <fmt/format.h>
+
+SBX_SETTING_BOOL(native_renderer_check_draw_writes, false, "Vulkan", "Validation",
+                 "Log the device fields the graphics library's draw and its packet-writing "
+                 "helpers change besides the command buffer (a debugging aid for the native "
+                 "renderer's exclusive mode; keeps the library's draw)");
+SBX_SETTING_BOOL(native_renderer_library_packets, true, "Vulkan", "Debugging",
+                 "In exclusive mode, let the graphics library write its GPU packets for "
+                 "indexed draws as before (nothing reads them)");
 
 namespace renderer {
 namespace {
@@ -84,7 +86,7 @@ Clock::time_point g_last_log = Clock::now();
 thread_local uint32_t t_segment_ends = 0;  // sub_8229C8D8 calls
 
 bool Checking() {
-  return ITC_FLAG(native_renderer_check_draw_writes);
+  return SBX_GET(native_renderer_check_draw_writes);
 }
 
 uint8_t* DevicePointer(uint8_t* base, uint32_t device) {
@@ -195,7 +197,7 @@ void renderer::DrawPackets_IndexedDraw(PPCContext& ctx, uint8_t* base) {
     }
     return;
   }
-  if (ITC_FLAG(native_renderer_library_packets) || predicated) {
+  if (SBX_GET(native_renderer_library_packets) || predicated) {
     __imp__sub_825A3ED0(ctx, base);
     return;
   }

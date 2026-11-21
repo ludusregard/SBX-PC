@@ -5,14 +5,13 @@
 // The heap, the formatters (printf's family), the parsers, the math kernels
 // and the copies (memcpy, memset and theirs) stay recompiled.
 
+#include "base/settings.h"
 #include "game/guest_types.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_c_runtime, true, "SBX",
-                    "Our own C++ for the C runtime's small functions (the array constructor "
-                    "and destructor loops, wcslen, wcscmp, the ASCII case-blind compare, rand) "
-                    "instead of the recompiled functions");
+SBX_SETTING_BOOL(native_c_runtime, true, "Overrides", "Runtime",
+                 "Our own C++ for the C runtime's small functions (the array constructor "
+                 "and destructor loops, wcslen, wcscmp, the ASCII case-blind compare, rand) "
+                 "instead of the recompiled functions");
 
 namespace {
 
@@ -27,7 +26,7 @@ struct ThreadData {
   u32_be rand_seed;
 };
 
-bool On() { return REXCVAR_GET(native_c_runtime); }
+bool On() { return SBX_GET(native_c_runtime); }
 
 uint32_t ToLowerAscii(uint32_t c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
 

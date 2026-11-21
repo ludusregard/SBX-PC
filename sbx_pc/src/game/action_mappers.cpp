@@ -3,13 +3,12 @@
 // lists' constructors, a client added, and an action mapper's stages
 // reset.
 
+#include "base/settings.h"
 #include "game/guest_types.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_action_mappers, true, "SBX",
-                    "Our own C++ for the input clients' set-up and the action mappers' stage "
-                    "reset instead of the recompiled functions");
+SBX_SETTING_BOOL(native_action_mappers, true, "Overrides", "Runtime",
+                 "Our own C++ for the input clients' set-up and the action mappers' stage "
+                 "reset instead of the recompiled functions");
 
 namespace {
 
@@ -54,7 +53,7 @@ struct ActionMapper {
 };
 GUEST_OFFSET(ActionMapper, stages, 1404);
 
-bool On() { return REXCVAR_GET(native_action_mappers); }
+bool On() { return SBX_GET(native_action_mappers); }
 
 void ConstructNode(ClientNode* node, uint32_t owner) {
   node->owner = owner;

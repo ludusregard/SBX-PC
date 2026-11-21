@@ -43,7 +43,7 @@ for line in open(lst):
     if ret != 'keep': f.append(f'  ctx.r3.u64 = {ret};')
     f.append('}')
     funcs.append('\n'.join(f))
-src = header.replace('@FLAG@', flag) + '\nnamespace {\n\nusing guest_memory::Fill;\nusing guest_memory::kAbsArg;\nusing guest_memory::kAbsByte;\nusing guest_memory::kAbsHalf;\nusing guest_memory::kAbsImage;\nusing guest_memory::kAbsSelf;\nusing guest_memory::kAbsWord;\nusing guest_memory::kArg;\nusing guest_memory::kByte;\nusing guest_memory::kHalf;\nusing guest_memory::kImage;\nusing guest_memory::kSelf;\nusing guest_memory::kWord;\n\n' + '\n\n'.join(t for t in tables if t) + f'\n\nbool On() {{ return REXCVAR_GET({flag}); }}\n\n' + extra.split('@@FUNCS@@')[0] + '}  // namespace\n\n' + '\n\n'.join(funcs) + '\n' + (extra.split('@@FUNCS@@')[1] if '@@FUNCS@@' in extra else '')
+src = header.replace('@FLAG@', flag) + '\nnamespace {\n\nusing guest_memory::Fill;\nusing guest_memory::kAbsArg;\nusing guest_memory::kAbsByte;\nusing guest_memory::kAbsHalf;\nusing guest_memory::kAbsImage;\nusing guest_memory::kAbsSelf;\nusing guest_memory::kAbsWord;\nusing guest_memory::kArg;\nusing guest_memory::kByte;\nusing guest_memory::kHalf;\nusing guest_memory::kImage;\nusing guest_memory::kSelf;\nusing guest_memory::kWord;\n\n' + '\n\n'.join(t for t in tables if t) + f'\n\nbool On() {{ return SBX_GET({flag}); }}\n\n' + extra.split('@@FUNCS@@')[0] + '}  // namespace\n\n' + '\n\n'.join(funcs) + '\n' + (extra.split('@@FUNCS@@')[1] if '@@FUNCS@@' in extra else '')
 open(out_path, 'w').write(src)
 print('written', len(funcs), 'failed', len(failed))
 for x in failed: print('  FAILED', x)

@@ -4,14 +4,13 @@
 // recordings stay recompiled (src/subtick/per_frame_logic.cpp wraps them for
 // --subtick).
 
+#include "base/settings.h"
 #include "game/game_modes.h"
 #include "game/race_overlays.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_race_overlays, true, "SBX",
-                    "Our own C++ for the race overlays' set-ups, resets, small setters and getters "
-                    "instead of the recompiled functions");
+SBX_SETTING_BOOL(native_race_overlays, true, "Overrides", "Race",
+                 "Our own C++ for the race overlays' set-ups, resets, small setters and getters "
+                 "instead of the recompiled functions");
 
 namespace {
 
@@ -34,7 +33,7 @@ using guest::At;
 using guest::Guest;
 using guest::ptr;
 
-bool On() { return REXCVAR_GET(native_race_overlays); }
+bool On() { return SBX_GET(native_race_overlays); }
 
 // The particles' destructor: an empty one.
 constexpr uint32_t kParticleDestructor = 0x821611F0;

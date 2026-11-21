@@ -20,6 +20,9 @@ struct DeviceContext {
   bool clip_distance, cull_distance, demote_to_helper_invocation;
   bool sampler_anisotropy, sampler_mirror_clamp_to_edge;
   float max_sampler_anisotropy;
+  // Lines wider than one pixel (wideLines), and the widest.
+  bool wide_lines;
+  float max_line_width;
   // For checking a saved pipeline cache is this device's.
   uint32_t vendor_id, device_id;
   std::array<uint8_t, VK_UUID_SIZE> pipeline_cache_uuid;

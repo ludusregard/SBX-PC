@@ -12,9 +12,17 @@ py build_vulkan_release.py   rem release\sbx-v<version>-*: Windows .zip, Linux .
 
 - Build logs: `out\codegen.log`, `out\build_vulkan.log`,
   `out\build_vulkan_linux.log`.
-- Settings: `sbx.toml` next to `sbx.exe`, flat `name = value` lines the SDK
-  loads at every start (before `REX_<NAME>` variables and the command line,
-  which win over it). F4's Save button writes the settings changed in the menu
+- Settings: `sbx.toml` next to `sbx.exe`, flat `name = value` lines loaded
+  at every start (before `REX_<NAME>` variables and the command line, which
+  win over it). Our settings are `sbx::Setting`s (`src/base/settings.h`):
+  defined with `SBX_SETTING_BOOL/INT/FLOAT/DOUBLE/STRING(name, default,
+  "Tab", "Group", "description"[, sbx::kRestart])` at file scope, declared
+  elsewhere with `SBX_SETTING_DECLARE(type, name)`, read with
+  `SBX_GET(name)`. The tab and group place it in F4. Our arguments are taken
+  off the command line before ReXGlue sees it (Linux `--wrap=main`, Windows
+  a `.CRT$XCY` initializer); ReXGlue still reads the same file for its own
+  cvars (`fullscreen`, `log_level`, `audio_mute`, the input binds) and
+  defers our keys without a warning. F4's Save button writes the settings changed in the menu
   into it, keeping its other lines and comments (`src/base/settings_file.cpp`).
   Init-only settings changed in F4 are saved for the next start. No
   `[sections]`: the SDK reads `[Input]` + `mnk_mode` as `Input_mnk_mode`.

@@ -13,16 +13,15 @@
 // 1.0 for points); the constructors here do that for each vector member,
 // as the game's do.
 
+#include "base/settings.h"
 #include "game/physics.h"
-
-#include <rex/cvar.h>
 
 #include <cmath>
 
-REXCVAR_DEFINE_BOOL(native_car_physics, true, "SBX",
-                    "Our own C++ for the car physics' set-ups and accessors (constructors, "
-                    "collision surfaces, input setters, surface values, wheel copies) instead "
-                    "of the recompiled functions; the vehicle's step stays recompiled");
+SBX_SETTING_BOOL(native_car_physics, true, "Overrides", "Cars",
+                 "Our own C++ for the car physics' set-ups and accessors (constructors, "
+                 "collision surfaces, input setters, surface values, wheel copies) instead "
+                 "of the recompiled functions; the vehicle's step stays recompiled");
 
 namespace {
 
@@ -40,7 +39,7 @@ using guest::Guest;
 
 constexpr uint32_t kCollisionObjectVtable = 0x82002A74;
 
-bool On() { return REXCVAR_GET(native_car_physics); }
+bool On() { return SBX_GET(native_car_physics); }
 
 float Clamp01(float v) {
   // A NaN is kept as it is.

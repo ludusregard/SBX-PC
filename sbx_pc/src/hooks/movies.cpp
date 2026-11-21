@@ -8,24 +8,23 @@
 // State's: the rest leave r3 as it came. The emulated GPU build keeps the
 // game's movie library, which draws through it.
 
+#include "base/settings.h"
 #include "guest.h"
 
 #include "hooks/title_screen.h"
 #include "movies/movie.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(play_movies_with_ffmpeg, true, "SBX",
-                    "Play the game's movies through our own FFmpeg and draw them with the native "
-                    "renderer instead of through the movie library linked into the game. Set at "
-                    "launch.");
+SBX_SETTING_BOOL(play_movies_with_ffmpeg, true, "Hooks", "Movies",
+                 "Play the game's movies through our own FFmpeg and draw them with the native "
+                 "renderer instead of through the movie library linked into the game. Set at "
+                 "launch.", sbx::kRestart);
 
 namespace mv = movies::movie;
 
 #define SBX_MOVIE(address, ...)                     \
   extern "C" REX_FUNC(sub_##address) {              \
     REX_FUNC_PROLOGUE();                            \
-    if (!REXCVAR_GET(play_movies_with_ffmpeg)) {    \
+    if (!SBX_GET(play_movies_with_ffmpeg)) {    \
       __imp__sub_##address(ctx, base);              \
       return;                                       \
     }                                               \
@@ -46,7 +45,7 @@ SBX_MOVIE(820AE410, mv::Release(base, ctx.r3.u32))                // ITC 820AE52
 // 28. --skip_cutscenes waits for it to have returned once (hooks/title_screen.cpp).
 extern "C" REX_FUNC(sub_820AE840) {
   REX_FUNC_PROLOGUE();
-  if (REXCVAR_GET(play_movies_with_ffmpeg)) {
+  if (SBX_GET(play_movies_with_ffmpeg)) {
     mv::RenderFrame(base, ctx.r3.u32);
   } else {
     __imp__sub_820AE840(ctx, base);

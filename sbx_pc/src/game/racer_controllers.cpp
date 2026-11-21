@@ -2,13 +2,12 @@
 // default): the cars' input records freed, and three of the race flow's
 // state steps.
 
+#include "base/settings.h"
 #include "game/guest_types.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_racer_controllers, true, "SBX",
-                    "Our own C++ for the cars' input records' teardown and three race flow "
-                    "steps instead of the recompiled functions");
+SBX_SETTING_BOOL(native_racer_controllers, true, "Overrides", "Race",
+                 "Our own C++ for the cars' input records' teardown and three race flow "
+                 "steps instead of the recompiled functions");
 
 namespace {
 
@@ -16,7 +15,7 @@ namespace {
 constexpr uint32_t kCarInputs = 0x826B5810;
 constexpr int kCarInputCount = 7;
 
-bool On() { return REXCVAR_GET(native_racer_controllers); }
+bool On() { return SBX_GET(native_racer_controllers); }
 
 }  // namespace
 

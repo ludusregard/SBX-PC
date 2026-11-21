@@ -2,13 +2,12 @@
 // default): a message sent, the state layers' constructors and their
 // interface's thunks, and the app states' updates.
 
+#include "base/settings.h"
 #include "game/std_types.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_app_states, true, "SBX",
-                    "Our own C++ for the app's state layers (their constructors, thunks and "
-                    "updates) instead of the recompiled functions");
+SBX_SETTING_BOOL(native_app_states, true, "Overrides", "Runtime",
+                 "Our own C++ for the app's state layers (their constructors, thunks and "
+                 "updates) instead of the recompiled functions");
 
 namespace {
 
@@ -43,7 +42,7 @@ struct AppStates {
   u32_be layer;  // The state layer updated.
 };
 
-bool On() { return REXCVAR_GET(native_app_states); }
+bool On() { return SBX_GET(native_app_states); }
 
 void ConstructStateLayer(Guest& g, StateLayer* layer, uint32_t owner) {
   layer->vtable = kStateLayerVtable;

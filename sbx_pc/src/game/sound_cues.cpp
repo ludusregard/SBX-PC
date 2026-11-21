@@ -3,13 +3,12 @@
 // sound's start and 3D flag, a bank pair's release, and the audio
 // manager's listener setters.
 
+#include "base/settings.h"
 #include "game/math.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_sound_cues, true, "SBX",
-                    "Our own C++ for the sound layer's constructors and small setters "
-                    "instead of the recompiled functions");
+SBX_SETTING_BOOL(native_sound_cues, true, "Overrides", "Audio",
+                 "Our own C++ for the sound layer's constructors and small setters "
+                 "instead of the recompiled functions");
 
 namespace {
 
@@ -120,7 +119,7 @@ GUEST_OFFSET(Emitter, point_b, 220);
 GUEST_OFFSET(Emitter, curve_b, 268);
 GUEST_OFFSET(Emitter, references, 276);
 
-bool On() { return REXCVAR_GET(native_sound_cues); }
+bool On() { return SBX_GET(native_sound_cues); }
 
 void ConstructEmitter(Emitter* emitter) {
   emitter->unknown_0 = 0;

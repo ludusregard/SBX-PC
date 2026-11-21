@@ -3,14 +3,13 @@
 // All four call the sound manager through its vtable, which stays
 // recompiled.
 
+#include "base/settings.h"
 #include "game/guest_types.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_menu_sounds, true, "SBX",
-                    "Our own C++ for the menu sounds and the volume options (MenuSound::Play, "
-                    "Sound::Play, SoundOptions::SetEffectsVolume and SetMusicVolume) instead of "
-                    "the recompiled functions; the sound manager's calls stay recompiled");
+SBX_SETTING_BOOL(native_menu_sounds, true, "Overrides", "Menus and UI",
+                 "Our own C++ for the menu sounds and the volume options (MenuSound::Play, "
+                 "Sound::Play, SoundOptions::SetEffectsVolume and SetMusicVolume) instead of "
+                 "the recompiled functions; the sound manager's calls stay recompiled");
 
 namespace {
 
@@ -37,7 +36,7 @@ constexpr uint32_t kMusicVolume = 0x82606B74;
 
 constexpr int kMaxVolumeSetting = 15;
 
-bool On() { return REXCVAR_GET(native_menu_sounds); }
+bool On() { return SBX_GET(native_menu_sounds); }
 
 void* SoundManager() { return At<void>(*At<u32_be>(kSoundManager)); }
 

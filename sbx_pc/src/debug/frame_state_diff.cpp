@@ -1,9 +1,10 @@
 #include "debug/frame_state_diff.h"
 
+#include "base/settings.h"
 #include "guest.h"
+#include "hooks/native_calls.h"
 #include "subtick/game_messages.h"
 
-#include <rex/cvar.h>
 #include <rex/logging.h>
 
 #include <algorithm>
@@ -31,23 +32,23 @@
 #include <sstream>
 #endif
 
-REXCVAR_DEFINE_BOOL(find_per_frame_state, false, "SBX",
-                    "Debug: find game state that advances on render-only passes (--subtick), "
-                    "and the code that advances it");
-REXCVAR_DEFINE_INT32(find_per_frame_state_interval_ms, 2000, "SBX",
-                     "How often --find_per_frame_state samples a render-only pass (0 = every "
-                     "one; slow)");
-REXCVAR_DEFINE_STRING(watch_addresses, "", "SBX",
-                      "With --find_per_frame_state, guest addresses (hex, comma-separated) to "
-                      "watch from the start, logging every change with the code making it");
-REXCVAR_DEFINE_BOOL(find_any_steps, false, "SBX",
-                    "With --find_per_frame_state, look for any steady step (a float changing "
-                    "by less than 1, or an integer by up to 4, by the same amount in two "
-                    "samples) instead of timer steps only");
-REXCVAR_DEFINE_BOOL(find_countdowns, false, "SBX",
-                    "With --find_per_frame_state, look for values counting down (a float in "
-                    "0..10 going down, or a small integer going down by one) instead of any "
-                    "timer step");
+SBX_SETTING_BOOL(find_per_frame_state, false, "Logging", "Debugging",
+                 "Debug: find game state that advances on render-only passes (--subtick), "
+                 "and the code that advances it");
+SBX_SETTING_INT(find_per_frame_state_interval_ms, 2000, "Logging", "Debugging",
+                "How often --find_per_frame_state samples a render-only pass (0 = every "
+                "one; slow)");
+SBX_SETTING_STRING(watch_addresses, "", "Logging", "Debugging",
+                   "With --find_per_frame_state, guest addresses (hex, comma-separated) to "
+                   "watch from the start, logging every change with the code making it");
+SBX_SETTING_BOOL(find_any_steps, false, "Logging", "Debugging",
+                 "With --find_per_frame_state, look for any steady step (a float changing "
+                 "by less than 1, or an integer by up to 4, by the same amount in two "
+                 "samples) instead of timer steps only");
+SBX_SETTING_BOOL(find_countdowns, false, "Logging", "Debugging",
+                 "With --find_per_frame_state, look for values counting down (a float in "
+                 "0..10 going down, or a small integer going down by one) instead of any "
+                 "timer step");
 
 namespace debug {
 
@@ -164,7 +165,7 @@ const char* AnyStep(uint32_t before, uint32_t after, double& step) {
 // Whether a word stepped like a frame timer: a float by +-1/30 or +-1/60 s,
 // or a small integer by +-1.
 const char* TimerStep(uint32_t before, uint32_t after) {
-  if (REXCVAR_GET(find_countdowns)) {
+  if (SBX_GET(find_countdowns)) {
     return CountdownStep(before, after);
   }
   float a = AsFloat(before), b = AsFloat(after);
@@ -184,7 +185,7 @@ const char* TimerStep(uint32_t before, uint32_t after) {
 class FrameStateDiff {
  public:
   void OnPassStart(uint8_t* base, bool render_only, bool in_race) {
-    if (!REXCVAR_GET(find_per_frame_state)) {
+    if (!SBX_GET(find_per_frame_state)) {
       return;
     }
     if (snapshot_taken_) {
@@ -197,7 +198,7 @@ class FrameStateDiff {
     auto now = std::chrono::steady_clock::now();
     bool sample = render_only &&
                   now - last_snapshot_ >=
-                      std::chrono::milliseconds(REXCVAR_GET(find_per_frame_state_interval_ms));
+                      std::chrono::milliseconds(SBX_GET(find_per_frame_state_interval_ms));
     if (sample) {
       last_snapshot_ = now;
       ranges_ = ReadableGuestRanges(base);
@@ -211,7 +212,7 @@ class FrameStateDiff {
   }
 
   void Before(uint8_t* base) {
-    if (!REXCVAR_GET(find_per_frame_state) || !render_only_) {
+    if (!SBX_GET(find_per_frame_state) || !render_only_) {
       return;
     }
     AddForcedWatches();
@@ -226,7 +227,7 @@ class FrameStateDiff {
   }
 
   void After(uint8_t* base, const char* kind, uint32_t id) {
-    if (!REXCVAR_GET(find_per_frame_state) || !render_only_ || before_.empty()) {
+    if (!SBX_GET(find_per_frame_state) || !render_only_ || before_.empty()) {
       return;
     }
     std::vector<uint32_t> values = std::move(before_.back());
@@ -265,7 +266,7 @@ class FrameStateDiff {
         uint32_t before = __builtin_bswap32(stored);
         uint32_t after = guest::LoadU32(base, address);
         const char* step;
-        if (REXCVAR_GET(find_any_steps)) {
+        if (SBX_GET(find_any_steps)) {
           // Only steps equal to the word's step in an earlier sample: a
           // steady rate, not a buffer being rewritten.
           double change = 0;
@@ -362,7 +363,7 @@ class FrameStateDiff {
     forced_added_ = true;
     if (!forced_parsed_) {
       forced_parsed_ = true;
-      std::string list = REXCVAR_GET(watch_addresses);
+      std::string list = SBX_GET(watch_addresses);
       size_t start = 0;
       while (start < list.size()) {
         size_t end = list.find(',', start);
@@ -430,7 +431,7 @@ void FrameStateDiff_After(uint8_t* base, const char* kind, uint32_t id) {
 // the tick handlers that advance watched state on render-only passes.
 extern "C" REX_FUNC(sub_8209A1C0) {
   REX_FUNC_PROLOGUE();
-  if (!REXCVAR_GET(find_per_frame_state)) {
+  if (!SBX_GET(find_per_frame_state)) {
     __imp__sub_8209A1C0(ctx, base);
     return;
   }
@@ -447,7 +448,7 @@ extern "C" REX_FUNC(sub_8209A1C0) {
 #define SBX_FRAME_STATE_WRAP(address)                                  \
   extern "C" REX_FUNC(sub_##address) {                                 \
     REX_FUNC_PROLOGUE();                                               \
-    if (!REXCVAR_GET(find_per_frame_state)) {                          \
+    if (!SBX_GET(find_per_frame_state)) {                          \
       __imp__sub_##address(ctx, base);                                 \
       return;                                                          \
     }                                                                  \
@@ -461,8 +462,20 @@ SBX_FRAME_STATE_WRAP(8209F998)
 SBX_FRAME_STATE_WRAP(8209F9F8)
 SBX_FRAME_STATE_WRAP(820C93A8)
 SBX_FRAME_STATE_WRAP(820C5BA0)  // draws the cars
-SBX_FRAME_STATE_WRAP(820F5F48)  // the draw step's own camera updates
 SBX_FRAME_STATE_WRAP(82132438)
 SBX_FRAME_STATE_WRAP(821325C0)
 SBX_FRAME_STATE_WRAP(8212F5D8)
 #undef SBX_FRAME_STATE_WRAP
+
+// Scenery::Draw (the draw step's scenery): the same wrap, around our C++
+// for it (hooks::NativeCourseScenery_Draw, --native_course_scenery).
+extern "C" REX_FUNC(sub_820F5F48) {
+  REX_FUNC_PROLOGUE();
+  if (!SBX_GET(find_per_frame_state)) {
+    hooks::NativeCourseScenery_Draw(ctx, base);
+    return;
+  }
+  debug::FrameStateDiff_Before(base);
+  hooks::NativeCourseScenery_Draw(ctx, base);
+  debug::FrameStateDiff_After(base, "draw step part", 0x820F5F48);
+}

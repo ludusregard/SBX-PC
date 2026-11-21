@@ -12,8 +12,8 @@ Needs glslangValidator (and spirv-val, if present, to check the result).
 - xegtao/sbx_xegtao.hlsl: the compute kernels (in the place of the
   sample's vaGTAO.hlsl; its bindings are listed at its top).
 - xegtao/xegtao_depth.comp: the AO's depth: the normals target's view
-  distances over the G-buffer's depth (NORMALS; with MULTISAMPLE for a
-  multisampled normals target), or the G-buffer's alone.
+  distances over the view's depth (BuildDepthMotion) (NORMALS; with MULTISAMPLE for a
+  multisampled normals target), or the view's depth alone.
 - xegtao/xegtao_normals.comp: the materials' normals over the ones from depth
   (with MULTISAMPLE for a multisampled normals target).
 - xegtao/xegtao_temporal.comp: the AO kept over frames (the history).

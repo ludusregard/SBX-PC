@@ -8,17 +8,16 @@
 // wildcard search and the length and range errors stay recompiled and are
 // called.
 
+#include "base/settings.h"
 #include "game/std_types.h"
-
-#include <rex/cvar.h>
 
 #include <algorithm>
 #include <cstring>
 
-REXCVAR_DEFINE_BOOL(native_std_string, true, "SBX",
-                    "Our own C++ for the C++ library's string (its storage, assign, append, "
-                    "the constructors, find and replace-all) instead of the recompiled "
-                    "functions; operator new and delete and memcpy_s stay recompiled");
+SBX_SETTING_BOOL(native_std_string, true, "Overrides", "Runtime",
+                 "Our own C++ for the C++ library's string (its storage, assign, append, "
+                 "the constructors, find and replace-all) instead of the recompiled "
+                 "functions; operator new and delete and memcpy_s stay recompiled");
 
 namespace {
 
@@ -30,7 +29,7 @@ using guest::Guest;
 
 constexpr uint32_t kToEnd = 0xFFFFFFFF;  // npos
 
-bool On() { return REXCVAR_GET(native_std_string); }
+bool On() { return SBX_GET(native_std_string); }
 
 // Recompiled functions this file calls.
 void OperatorDelete(Guest& g, void* block) { g.Call(sub_8258C868, block); }

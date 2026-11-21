@@ -10,14 +10,13 @@
 // recompiled.
 
 #include "game/game_modes.h"
+#include "base/settings.h"
 #include "hooks/native_calls.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_game_modes, true, "SBX",
-                    "Our own C++ for the game modes' state machines (a message's handler "
-                    "found and added, the machines' and modes' constructors, the race "
-                    "overlays' flags) instead of the recompiled functions");
+SBX_SETTING_BOOL(native_game_modes, true, "Overrides", "Menus and UI",
+                 "Our own C++ for the game modes' state machines (a message's handler "
+                 "found and added, the machines' and modes' constructors, the race "
+                 "overlays' flags) instead of the recompiled functions");
 
 namespace {
 
@@ -67,7 +66,7 @@ constexpr uint32_t kMember56896Vtable = 0x82006AD4;
 constexpr uint32_t kMember67760Vtable = 0x820092F8;
 constexpr uint32_t kBuffer28Vtable = 0x820092D0;
 
-bool On() { return REXCVAR_GET(native_game_modes); }
+bool On() { return SBX_GET(native_game_modes); }
 
 // --- The state machines ---
 
@@ -136,8 +135,8 @@ void ConstructStateMachine(StateMachine* machine) {
 // --- The race mode's members ---
 
 void ConstructObject(GameObject* object, uint32_t vtable) {
-  object->unknown_16 = 0;
-  object->unknown_20 = 0;
+  object->car = 0;
+  object->viewport = 0;
   for (Vector& point : object->points) {
     point.w = 1.0f;
   }
@@ -181,9 +180,9 @@ void ConstructMember13360(Guest& g, game::Member13360* member) {
     buffer.unknown_24 = 0;
   }
   ConstructObject384(&member->unknown_43136);
-  member->unknown_360 = -1;
+  member->zone = -1;
   member->unknown_448 = 0;
-  member->unknown_452 = *At<u32_be>(kSetting452);
+  member->zone_count = *At<u32_be>(kSetting452);
   for (Buffer28& buffer : member->buffers) {
     ResetBuffer(g, &buffer);
   }
@@ -212,20 +211,20 @@ void ConstructRaceModeMember(Guest& g, RaceModeMember* member) {
   member->machine.count = 0;
   member->machine.state = 0;
   member->vtable = kRaceModeMemberVtable;
-  ConstructObject1104(&member->unknown_9648[0], kObject1104Vtable);
-  ConstructObject1104(&member->unknown_9648[1], kObject1104Vtable);
-  ConstructObject1104(&member->unknown_11856, kObject1104Vtable2);
-  ConstructObject384(&member->unknown_12976);
-  g.Call(sub_82153110, &member->unknown_13360);  // Member13360::Member13360
-  g.Call(sub_82106BC8, &member->unknown_56880);  // Member56896::Member56896
-  ConstructMember67760(&member->unknown_67744);
-  for (game::Block1104& block : member->unknown_68512) {
-    block.unknown_1088.w = 1.0f;
+  ConstructObject1104(&member->hood_cameras[0], kObject1104Vtable);
+  ConstructObject1104(&member->hood_cameras[1], kObject1104Vtable);
+  ConstructObject1104(&member->cockpit_camera.camera, kObject1104Vtable2);
+  ConstructObject384(&member->chase_camera);
+  g.Call(sub_82153110, &member->tv_cameras);       // Member13360::Member13360
+  g.Call(sub_82106BC8, &member->scripted_camera);  // Member56896::Member56896
+  ConstructMember67760(&member->unknown_camera);
+  for (game::Block1104& block : member->unknown_68528) {
+    block.unknown_1072.w = 1.0f;
   }
   member->unknown_77360 = -1;
-  for (u32_be& word : member->unknown_77364) {
-    word = 0;
-  }
+  member->unknown_77364 = 0;
+  member->unknown_77368 = 0;
+  member->unknown_77372 = 0;
 }
 
 // The overlays that are set.
@@ -395,9 +394,9 @@ extern "C" REX_FUNC(sub_82106C68) {
   SBX_GAME_MODES_FALLBACK(sub_82106C68)
   RaceModeMember* member = At<RaceModeMember>(ctx.r3.u32);
   member->vtable = kRaceModeMemberVtable;
-  member->unknown_56880.xprs.second = game::XPR{};
-  g.Call(sub_8257CA60, &member->unknown_56880.xprs.first);  // XPR::~XPR
-  g.Call(sub_82106B78, &member->unknown_13360);             // Member13360::~Member13360
+  member->scripted_camera.xprs.second = game::XPR{};
+  g.Call(sub_8257CA60, &member->scripted_camera.xprs.first);  // XPR::~XPR
+  g.Call(sub_82106B78, &member->tv_cameras);                  // Member13360::~Member13360
 }
 
 // RaceModeMember::RaceModeMember: r3 the member. Returns it.

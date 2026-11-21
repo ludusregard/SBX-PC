@@ -20,22 +20,22 @@
 // its control flow written out. If codegen's output for it changes, check it
 // again: findstr /n "DEFINE_REX_FUNC(sub_8218C240)" generated\default\*.cpp
 
+#include "base/settings.h"
 #include "guest.h"
 #include "hooks/autosave.h"
 #include "subtick/game_messages.h"
 
-#include <rex/cvar.h>
 #include <rex/logging.h>
 
-REXCVAR_DECLARE(bool, subtick);
+SBX_SETTING_DECLARE(bool, subtick);
 
-REXCVAR_DEFINE_INT32(post_race_check_cycles, 1, "SBX",
-                     "Post-race check: how many checks to count before the race moves to "
-                     "its next screen (the original is 60; 1 fixes the black screen after "
-                     "quest races)");
-REXCVAR_DEFINE_BOOL(per_tick_post_race_check, true, "SBX",
-                    "With --subtick, the post-race check runs once per tick (logic passes "
-                    "only), as on the Xbox");
+SBX_SETTING_INT(post_race_check_cycles, 1, "Hooks", "Fixes: Race",
+                "Post-race check: how many checks to count before the race moves to "
+                "its next screen (the original is 60; 1 fixes the black screen after "
+                "quest races)");
+SBX_SETTING_BOOL(per_tick_post_race_check, true, "Hooks", "Fixes: Race",
+                 "With --subtick, the post-race check runs once per tick (logic passes "
+                 "only), as on the Xbox");
 
 namespace {
 
@@ -83,8 +83,8 @@ extern "C" REX_FUNC(sub_8218C240) {
   bool render_only = false;
   bool main_thread = false;
   subtick::GameMessages_PassFromAnyThread(pass, render_only, main_thread);
-  render_only = render_only && main_thread && REXCVAR_GET(subtick);
-  if (render_only && REXCVAR_GET(per_tick_post_race_check)) {
+  render_only = render_only && main_thread && SBX_GET(subtick);
+  if (render_only && SBX_GET(per_tick_post_race_check)) {
     return;
   }
 
@@ -110,7 +110,7 @@ extern "C" REX_FUNC(sub_8218C240) {
   if (guest::LoadU32(base, race + kRaceLoaded) == 0) {
     return;
   }
-  uint32_t limit = uint32_t(REXCVAR_GET(post_race_check_cycles));
+  uint32_t limit = uint32_t(SBX_GET(post_race_check_cycles));
   if (checks < limit) {
     return;
   }

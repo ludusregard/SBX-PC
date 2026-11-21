@@ -26,7 +26,7 @@ for line in open(lst):
     f.append('}')
     funcs.append('\n'.join(f))
 pre, post = extra.split('@@FUNCS@@')
-src = header + f'\nnamespace {{\n\nusing guest_memory::CopyBytes;\nusing guest_memory::CopyHalves;\nusing guest_memory::CopyWords;\n\nbool On() {{ return REXCVAR_GET({flag}); }}\n\n' + pre + '}  // namespace\n\n' + '\n\n'.join(funcs) + '\n' + post
+src = header + f'\nnamespace {{\n\nusing guest_memory::CopyBytes;\nusing guest_memory::CopyHalves;\nusing guest_memory::CopyWords;\n\nbool On() {{ return SBX_GET({flag}); }}\n\n' + pre + '}  // namespace\n\n' + '\n\n'.join(funcs) + '\n' + post
 open(out_path, 'w').write(src)
 print('written', len(funcs), 'failed', len(failed))
 for x in failed: print('  FAILED', x)

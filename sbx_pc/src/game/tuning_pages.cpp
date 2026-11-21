@@ -2,13 +2,12 @@
 // the decal images' sticker movies restored and the vinyl page's busy
 // icon set up.
 
+#include "base/settings.h"
 #include "game/guest_types.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_tuning_pages, true, "SBX",
-                    "Our own C++ for the tuning pages' sticker movies and vinyl busy icon "
-                    "instead of the recompiled functions");
+SBX_SETTING_BOOL(native_tuning_pages, true, "Overrides", "Cars",
+                 "Our own C++ for the tuning pages' sticker movies and vinyl busy icon "
+                 "instead of the recompiled functions");
 
 namespace {
 
@@ -28,7 +27,7 @@ struct TuningScreen {
   u32_be busy_icon[5];  // The vinyl page's busy icon's set-up.
 };
 
-bool On() { return REXCVAR_GET(native_tuning_pages); }
+bool On() { return SBX_GET(native_tuning_pages); }
 
 void RestoreMovieTexture(Guest& g, uint32_t images, uint32_t kind, uint32_t texture) {
   g.Call(sub_82205FA0, images, kind, texture);  // DecalImages::RestoreMovieTexture

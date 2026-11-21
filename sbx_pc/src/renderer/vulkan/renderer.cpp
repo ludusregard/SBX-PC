@@ -27,196 +27,188 @@
 #include <filesystem>
 #include <future>
 #include <memory>
+#include <rex/cvar.h>
 #include <string>
 #include <vector>
 #include "base/log.h"
-#include "base/flags.h"
+#include "base/settings.h"
 
-ITC_FLAG_BOOL(log_gpu_memory, false, "SBX",
-              "Log every 5 s the GPU memory the native renderer holds, by what it's for, "
-              "and its counts of views, samplers, descriptor pools and pipelines (to find "
-              "what grows from race to race)");
-ITC_FLAG_BOOL(native_renderer_validation, false, "SBX",
-              "Enable the Vulkan validation layer for the native renderer, if installed");
-ITC_FLAG_INT32(native_renderer_show_resolve, -1, "SBX",
-               "Show the frame's nth resolve destination in the native renderer's window "
-               "instead of the main view (a debugging aid; -1 for the main view)");
+SBX_SETTING_BOOL(log_gpu_memory, false, "Logging", "Native Renderer",
+                 "Log every 5 s the GPU memory the native renderer holds, by what it's for, "
+                 "and its counts of views, samplers, descriptor pools and pipelines (to find "
+                 "what grows from race to race)");
+SBX_SETTING_BOOL(native_renderer_validation, false, "Vulkan", "Validation",
+                 "Enable the Vulkan validation layer for the native renderer, if installed",
+                 sbx::kRestart);
+SBX_SETTING_INT(native_renderer_show_resolve, -1, "Vulkan", "Debugging",
+                "Show the frame's nth resolve destination in the native renderer's window "
+                "instead of the main view (a debugging aid; -1 for the main view)");
 
-ITC_FLAG_BOOL(log_render_only_draws, false, "SBX",
-              "Log when a render-only frame (--subtick) draws a different number of draws "
-              "than the logic frame before it: what a screen records only during Update "
-              "(the menus' check, with --log_message_handlers to name the screen)");
-ITC_FLAG_BOOL(native_renderer_serialize, false, "SBX",
-              "Wait for the GPU to finish each frame before recording the next (a "
-              "debugging aid: rules out frames in flight sharing data)");
-ITC_FLAG_BOOL(native_renderer_check_mirror, false, "SBX",
-              "Log the vertex and index ranges whose contents change between frames "
-              "(a debugging aid)");
-ITC_FLAG_BOOL(native_renderer_skip_repeated_state, true, "SBX",
-              "Don't record a draw's viewport, scissor, depth bias, blend constants, "
-              "pipeline or index buffer again when the command buffer already holds them");
-ITC_FLAG_BOOL(native_renderer_reuse_constants, true, "SBX",
-              "Point a draw at the constants the last draw wrote, block by block, when "
-              "they're the same, instead of writing them again");
-ITC_FLAG_BOOL(native_renderer_log_constant_changes, false, "SBX",
-              "Log why draws' constants aren't reused: what differs in the fetch block, "
-              "and which blocks' offsets differ when the descriptor sets repeat");
-ITC_FLAG_BOOL(native_renderer_log_register_reads, false, "SBX",
-              "Log how often the device's register shadow is read a frame, how many words "
-              "are copied (those marked dirty) and what changed since the last read");
-ITC_FLAG_BOOL(native_renderer_cache_index_ranges, true, "SBX",
-              "Keep each draw's lowest and highest index until memcpy writes its index "
-              "range, instead of scanning the indices every draw");
-ITC_FLAG_BOOL(native_renderer_log_index_ranges, false, "SBX",
-              "Log how often draws' index ranges are scanned again unchanged since memcpy "
-              "last wrote them, and how the guest memory mirror's checks go");
-ITC_FLAG_BOOL(native_renderer_log_texture_bindings, false, "SBX",
-              "Log how often draws' texture bindings repeat the last ones (fetch constants, "
-              "views, samplers, descriptor sets) and what would empty a cache of them");
-ITC_FLAG_BOOL(native_renderer_cache_shader_lookups, true, "SBX",
-              "Keep draws' shader lookups by what they read from the shader objects "
-              "instead of hashing the shaders' microcode every draw");
-ITC_FLAG_BOOL(native_renderer_log_shader_lookups, false, "SBX",
-              "Log how often draws' shader lookups repeat the last ones and whether a key "
-              "of the shader objects' fields would ever give a shader whose microcode "
-              "changed");
-ITC_FLAG_BOOL(native_renderer_reuse_texture_sets, true, "SBX",
-              "Give a draw the last draw's texture descriptor set when its shader and the "
-              "fetch constants it reads are unchanged, and no texture changed");
-ITC_FLAG_BOOL(native_renderer_copy_all, false, "SBX",
-              "Copy every vertex and index range into the mirror every frame, not only "
-              "those the library's memcpy wrote since (a debugging aid)");
-ITC_FLAG_BOOL(native_renderer_mirror_by_tick, true, "SBX",
-              "Draws read a guest memory mirror updated only as a logic pass's list starts "
-              "replaying, the two mirrors alternating (=false for the old per-draw "
-              "mirror; see 'Hypothesis to test: the mirrors updated once a tick' in "
-              "docs/native-renderer.md)");
-ITC_FLAG_BOOL(native_renderer_mirror_to_both, true, "SBX",
-              "With --native_renderer_mirror_by_tick: memcpy's writes go into both mirrors "
-              "at each frame's start, the one draws read included");
-ITC_FLAG_BOOL(native_renderer_verify_mirror, false, "SBX",
-              "Compare each vertex and index range not copied into the mirror with guest "
-              "memory every frame, logging those that differ (a debugging aid; slow, ~20 "
-              "fps in a race). With --native_renderer_mirror_by_tick: each drawn range "
-              "looked up in the writes the mirror hasn't had instead (fast)");
-ITC_FLAG_BOOL(native_renderer_watch_draws, false, "SBX",
-              "Log what changes in the main view's draws' inputs between frames: with the "
-              "camera still, only flickering draws should (a debugging aid)");
-ITC_FLAG_BOOL(native_renderer_hide_cubes, false, "SBX",
-              "Give cube maps the white placeholder (a debugging aid)");
-ITC_FLAG_STRING(native_renderer_cycle, "", "SBX",
-                "Directory: when a file named 'now' appears in it, leave out the main "
-                "view's draws of each pixel shader in turn for 3 s, saving a frame of each "
-                "(a debugging aid that keeps frames recorded at their usual speed)");
-ITC_FLAG_BOOL(native_renderer_check_late_writes, false, "SBX",
-              "Log vertex and index ranges written after we copied them, by the end of "
-              "the frame (a debugging aid)");
-ITC_FLAG_BOOL(native_renderer_check_clobbers, false, "SBX",
-              "Log copies into the mirror that change bytes an earlier draw's copy put "
-              "there in the same frame (a debugging aid)");
-ITC_FLAG_STRING(native_renderer_watch_pixel_shader, "", "SBX",
-                "With native_renderer_watch_draws: only the draws of this pixel shader "
-                "(hash in hex)");
-ITC_FLAG_BOOL(motion_blur, true, "SBX",
-              "Draw the game's velocity-based motion blur (pixel shader "
-              "7EB16456AAD56CBA); false leaves the frame unblurred");
-ITC_FLAG_BOOL(cmaa2, false, "SBX",
-              "Anti-alias the 3D view with Intel's CMAA2 (on top of the game's 2x MSAA), "
-              "before the post-processing reads it");
-ITC_FLAG_STRING(cmaa2_threshold, "0.05", "SBX",
-                "CMAA2's edge threshold: lower finds more edges (Intel's presets: 0.15 low, "
-                "0.10 medium, 0.07 high, 0.05 ultra). Read when the first race starts");
-ITC_FLAG_BOOL(msaa, true, "SBX",
-              "Draw the game's multisampled targets with their MSAA (2x the race's 3D view, "
-              "4x the garage's). false: one sample each, cheaper, with --cmaa2/--fxaa as the "
-              "anti-aliasing instead. Read at startup");
-ITC_FLAG_STRING(blur_frame_blend, "0", "SBX",
-                "Experimental motion blur: the 3D view's recent frames averaged over a shutter "
-                "(blur_frame_blend_shutter), kept sharp at the centre of the screen. Its "
-                "strength (0-1; 0: off). More frames to blend with --subtick and a --max_fps "
-                "above 30. Read when the first race starts");
-ITC_FLAG_STRING(blur_frame_blend_center, "0.3", "SBX",
-                "With blur_frame_blend: the radius kept sharp (0 the centre, 1 the corners)");
-ITC_FLAG_STRING(blur_frame_blend_edge, "0.7", "SBX",
-                "With blur_frame_blend: the radius from where the blur is full");
-ITC_FLAG_STRING(blur_frame_blend_shutter, "1/8", "SBX",
-                "With blur_frame_blend: the shutter's length in seconds, or as a fraction "
-                "(1/30). A time, so the same at any frame rate; more frames fall in a longer "
-                "shutter (at most 16)");
-ITC_FLAG_BOOL(gbuffer, false, "SBX",
-              "Experimental: G-buffer lite: the 3D view's depth and the camera's motion "
-              "vectors into buffers of our own each race frame (groundwork for new effects; "
-              "nothing uses them yet but gbuffer_debug)");
-ITC_FLAG_INT32(gbuffer_resolve, 2, "SBX",
-               "With gbuffer: at which of a frame's resolves of the 3D view it's built (2: "
-               "the whole scene, with the cars, which are drawn after the first; 1: the "
-               "opaque scenery only)");
-ITC_FLAG_INT32(gbuffer_debug, 0, "SBX",
-               "With gbuffer: draw one of its buffers over the frame: 0 off, 1 view distance "
-               "(white near), 2 camera motion (red right, green down, gray still), 3 the "
-               "game's own velocity buffer, 4 the depth as drawn");
-ITC_FLAG_STRING(gbuffer_debug_depth_range, "500", "SBX",
-                "With gbuffer_debug 1: the distance shown as black, in the game's units");
-ITC_FLAG_STRING(gbuffer_debug_velocity_scale, "20", "SBX",
-                "With gbuffer_debug 2: how much the motion is magnified");
-ITC_FLAG_BOOL(xegtao, false, "SBX",
-              "Experimental: Intel's XeGTAO ambient occlusion on the 3D view, in races and in "
-              "the garage, shops and parking area, before the anti-aliasing and the "
-              "post-processing. With native_shaders, from the materials' smooth normals and a "
-              "depth of its own: glass and additive light left out, smooth-alpha edges "
-              "dithered, the light that draws add (glows, emissives, projected light) not "
-              "darkened");
-ITC_FLAG_BOOL(xegtao_mirror, false, "SBX",
-              "With xegtao: the rear-view mirror in races too (its own buffers and passes, so "
-              "it costs extra)");
-ITC_FLAG_STRING(xegtao_temporal, "0.05", "SBX",
-                "With xegtao: each frame's share of the AO kept over frames, which averages "
-                "the noise out (lower: smoother, slower to follow; 1: off)");
-ITC_FLAG_INT32(xegtao_quality, 2, "SBX",
-               "With xegtao: 0 low, 1 medium, 2 high, 3 ultra (more samples a pixel)");
-ITC_FLAG_INT32(xegtao_denoise, 2, "SBX",
-               "With xegtao: denoise passes: 0 none (noisy), 1 sharp, 2 medium, 3 soft");
-ITC_FLAG_STRING(xegtao_radius, "0.75", "SBX",
-                "With xegtao: how far occluders reach, in the game's units (meters)");
-ITC_FLAG_STRING(xegtao_strength, "1.0", "SBX",
-                "With xegtao: how much of the occlusion is applied (0-1; 0: no change)");
-ITC_FLAG_INT32(xegtao_debug, 0, "SBX",
-               "With xegtao: draw one of its buffers over the frame: 0 off, 1 the AO (white: "
-               "none), 2 the normals, 3 the denoiser's edges");
-ITC_FLAG_BOOL(fxaa, false, "SBX",
-              "Anti-alias the 3D view with FXAA (cheaper and softer than cmaa2; after it if "
-              "both are on), before the post-processing reads it");
-ITC_FLAG_BOOL(aa_debug, false, "SBX",
-              "With cmaa2 or fxaa: show the pixels they change (cmaa2: everything else "
-              "green; fxaa: those pixels red), to check they run");
-ITC_FLAG_INT32(aa_resolve, 2, "SBX",
-               "With cmaa2 or fxaa: before which of a frame's resolves of the 3D view they run "
-               "(2: the whole scene, before the post-processing; 1: the opaque scene)");
-ITC_FLAG_STRING(native_renderer_skip_pixel_shader, "", "SBX",
-                "Leave out the draws of this pixel shader (hash in hex; a debugging aid)");
-ITC_FLAG_BOOL(native_renderer_log_glow, false, "SBX",
-              "Log the glow history's cross-fades and write-backs once a second, by logic "
-              "and render-only frames (a debugging aid)");
-ITC_FLAG_BOOL(native_renderer_base_level_only, false, "SBX",
-              "Sample only each texture's first level (a debugging aid)");
-ITC_FLAG_BOOL(native_renderer_verify_textures, false, "SBX",
-              "Hash every texture used each frame, logging and reloading those whose "
-              "memory changed with no memcpy write recorded (a debugging aid)");
-ITC_FLAG_BOOL(native_renderer_no_index_clamp, false, "SBX",
-              "Don't clamp indices to VGT_MIN/MAX_VTX_INDX (a debugging aid)");
-ITC_FLAG_INT32(native_renderer_dump_every, 0, "SBX",
-               "With native_renderer_dump: dump only the frame itself (shown image, draw "
-               "IDs, frame.json) every this many seconds of a race (a debugging aid)");
-ITC_FLAG_STRING(native_renderer_dump, "", "SBX",
-                "Directory to dump frames into, as PFM files, with frame.json describing "
-                "each draw: once 10 s into a race, and again whenever a file named 'now' "
-                "appears in it (a debugging aid; see docs/native-renderer-port.md)");
-ITC_FLAG_STRING(render_frame_dump, "", "SBX",
-                "Where the overlay's Dump this frame button writes (a folder for each "
-                "dump): empty for frame_dumps next to sbx.exe");
+SBX_SETTING_BOOL(log_render_only_draws, false, "Logging", "Native Renderer",
+                 "Log when a render-only frame (--subtick) draws a different number of draws "
+                 "than the logic frame before it: what a screen records only during Update "
+                 "(the menus' check, with --log_message_handlers to name the screen)");
+SBX_SETTING_BOOL(native_renderer_serialize, false, "Vulkan", "Debugging",
+                 "Wait for the GPU to finish each frame before recording the next (a "
+                 "debugging aid: rules out frames in flight sharing data)");
+SBX_SETTING_BOOL(native_renderer_check_mirror, false, "Vulkan", "Validation",
+                 "Log the vertex and index ranges whose contents change between frames "
+                 "(a debugging aid)");
+SBX_SETTING_BOOL(native_renderer_skip_repeated_state, true, "Vulkan", "Caching",
+                 "Don't record a draw's viewport, scissor, depth bias, blend constants, "
+                 "pipeline or index buffer again when the command buffer already holds them");
+SBX_SETTING_BOOL(native_renderer_reuse_constants, true, "Vulkan", "Caching",
+                 "Point a draw at the constants the last draw wrote, block by block, when "
+                 "they're the same, instead of writing them again");
+SBX_SETTING_BOOL(native_renderer_log_constant_changes, false, "Logging", "Native Renderer",
+                 "Log why draws' constants aren't reused: what differs in the fetch block, "
+                 "and which blocks' offsets differ when the descriptor sets repeat");
+SBX_SETTING_BOOL(native_renderer_log_register_reads, false, "Logging", "Native Renderer",
+                 "Log how often the device's register shadow is read a frame, how many words "
+                 "are copied (those marked dirty) and what changed since the last read");
+SBX_SETTING_BOOL(native_renderer_cache_index_ranges, true, "Vulkan", "Caching",
+                 "Keep each draw's lowest and highest index until memcpy writes its index "
+                 "range, instead of scanning the indices every draw");
+SBX_SETTING_BOOL(native_renderer_log_index_ranges, false, "Logging", "Native Renderer",
+                 "Log how often draws' index ranges are scanned again unchanged since memcpy "
+                 "last wrote them, and how the guest memory mirror's checks go");
+SBX_SETTING_BOOL(native_renderer_log_texture_bindings, false, "Logging", "Native Renderer",
+                 "Log how often draws' texture bindings repeat the last ones (fetch constants, "
+                 "views, samplers, descriptor sets) and what would empty a cache of them");
+SBX_SETTING_BOOL(native_renderer_cache_shader_lookups, true, "Vulkan", "Caching",
+                 "Keep draws' shader lookups by what they read from the shader objects "
+                 "instead of hashing the shaders' microcode every draw");
+SBX_SETTING_BOOL(native_renderer_log_shader_lookups, false, "Logging", "Native Renderer",
+                 "Log how often draws' shader lookups repeat the last ones and whether a key "
+                 "of the shader objects' fields would ever give a shader whose microcode "
+                 "changed");
+SBX_SETTING_BOOL(native_renderer_reuse_texture_sets, true, "Vulkan", "Caching",
+                 "Give a draw the last draw's texture descriptor set when its shader and the "
+                 "fetch constants it reads are unchanged, and no texture changed");
+SBX_SETTING_BOOL(native_renderer_copy_all, false, "Vulkan", "Debugging",
+                 "Copy every vertex and index range into the mirror every frame, not only "
+                 "those the library's memcpy wrote since (a debugging aid)");
+SBX_SETTING_BOOL(native_renderer_mirror_by_tick, true, "Vulkan", "Debugging",
+                 "Draws read a guest memory mirror updated only as a logic pass's list starts "
+                 "replaying, the two mirrors alternating (=false for the old per-draw "
+                 "mirror; see 'Hypothesis to test: the mirrors updated once a tick' in "
+                 "docs/native-renderer.md)");
+SBX_SETTING_BOOL(native_renderer_mirror_to_both, true, "Vulkan", "Debugging",
+                 "With --native_renderer_mirror_by_tick: memcpy's writes go into both mirrors "
+                 "at each frame's start, the one draws read included");
+SBX_SETTING_BOOL(native_renderer_verify_mirror, false, "Vulkan", "Validation",
+                 "Compare each vertex and index range not copied into the mirror with guest "
+                 "memory every frame, logging those that differ (a debugging aid; slow, ~20 "
+                 "fps in a race). With --native_renderer_mirror_by_tick: each drawn range "
+                 "looked up in the writes the mirror hasn't had instead (fast)");
+SBX_SETTING_BOOL(native_renderer_watch_draws, false, "Vulkan", "Debugging",
+                 "Log what changes in the main view's draws' inputs between frames: with the "
+                 "camera still, only flickering draws should (a debugging aid)");
+SBX_SETTING_BOOL(native_renderer_hide_cubes, false, "Vulkan", "Debugging",
+                 "Give cube maps the white placeholder (a debugging aid)");
+SBX_SETTING_STRING(native_renderer_cycle, "", "Vulkan", "Debugging",
+                   "Directory: when a file named 'now' appears in it, leave out the main "
+                   "view's draws of each pixel shader in turn for 3 s, saving a frame of each "
+                   "(a debugging aid that keeps frames recorded at their usual speed)");
+SBX_SETTING_BOOL(native_renderer_check_late_writes, false, "Vulkan", "Validation",
+                 "Log vertex and index ranges written after we copied them, by the end of "
+                 "the frame (a debugging aid)");
+SBX_SETTING_BOOL(native_renderer_check_clobbers, false, "Vulkan", "Validation",
+                 "Log copies into the mirror that change bytes an earlier draw's copy put "
+                 "there in the same frame (a debugging aid)");
+SBX_SETTING_STRING(native_renderer_watch_pixel_shader, "", "Vulkan", "Debugging",
+                   "With native_renderer_watch_draws: only the draws of this pixel shader "
+                   "(hash in hex)");
+SBX_SETTING_BOOL(motion_blur, true, "Graphics", "Post-Process",
+                 "Draw the game's velocity-based motion blur (pixel shader "
+                 "7EB16456AAD56CBA); false leaves the frame unblurred");
+SBX_SETTING_BOOL(cmaa2, false, "Graphics", "Anti-Aliasing",
+                 "Anti-alias the 3D view with Intel's CMAA2 (on top of the game's 2x MSAA), "
+                 "before the post-processing reads it");
+SBX_SETTING_STRING(cmaa2_threshold, "0.05", "Graphics", "Anti-Aliasing",
+                   "CMAA2's edge threshold: lower finds more edges (Intel's presets: 0.15 low, "
+                   "0.10 medium, 0.07 high, 0.05 ultra). Read when the first race starts",
+                   sbx::kRestart);
+SBX_SETTING_BOOL(msaa, true, "Graphics", "Anti-Aliasing",
+                 "Draw the game's multisampled targets with their MSAA (2x the race's 3D view, "
+                 "4x the garage's). false: one sample each, cheaper, with --cmaa2/--fxaa as the "
+                 "anti-aliasing instead. Read at startup", sbx::kRestart);
+SBX_SETTING_STRING(blur_frame_blend, "0", "Graphics", "Experimental",
+                   "Experimental motion blur: the 3D view's recent frames averaged over a shutter "
+                   "(blur_frame_blend_shutter), kept sharp at the centre of the screen. Its "
+                   "strength (0-1; 0: off). More frames to blend with --subtick and a --max_fps "
+                   "above 30. Read when the first race starts");
+SBX_SETTING_STRING(blur_frame_blend_center, "0.3", "Graphics", "Experimental",
+                   "With blur_frame_blend: the radius kept sharp (0 the centre, 1 the corners)");
+SBX_SETTING_STRING(blur_frame_blend_edge, "0.7", "Graphics", "Experimental",
+                   "With blur_frame_blend: the radius from where the blur is full");
+SBX_SETTING_STRING(blur_frame_blend_shutter, "1/8", "Graphics", "Experimental",
+                   "With blur_frame_blend: the shutter's length in seconds, or as a fraction "
+                   "(1/30). A time, so the same at any frame rate; more frames fall in a longer "
+                   "shutter (at most 16)");
+SBX_SETTING_BOOL(xegtao, false, "Graphics", "Ambient Occlusion",
+                 "Experimental: Intel's XeGTAO ambient occlusion on the 3D view, in races and in "
+                 "the garage, shops and parking area, before the anti-aliasing and the "
+                 "post-processing. With native_shaders, from the materials' smooth normals and a "
+                 "depth of its own: glass and additive light left out, smooth-alpha edges "
+                 "dithered, the light that draws add (glows, emissives, projected light) not "
+                 "darkened");
+SBX_SETTING_BOOL(xegtao_mirror, false, "Graphics", "Ambient Occlusion",
+                 "With xegtao: the rear-view mirror in races too (its own buffers and passes, so "
+                 "it costs extra)");
+SBX_SETTING_STRING(xegtao_temporal, "0.05", "Graphics", "Ambient Occlusion",
+                   "With xegtao: each frame's share of the AO kept over frames, which averages "
+                   "the noise out (lower: smoother, slower to follow; 1: off)");
+SBX_SETTING_INT(xegtao_quality, 2, "Graphics", "Ambient Occlusion",
+                "With xegtao: 0 low, 1 medium, 2 high, 3 ultra (more samples a pixel)");
+SBX_SETTING_INT(xegtao_denoise, 2, "Graphics", "Ambient Occlusion",
+                "With xegtao: denoise passes: 0 none (noisy), 1 sharp, 2 medium, 3 soft");
+SBX_SETTING_STRING(xegtao_radius, "0.75", "Graphics", "Ambient Occlusion",
+                   "With xegtao: how far occluders reach, in the game's units (meters)");
+SBX_SETTING_STRING(xegtao_strength, "1.0", "Graphics", "Ambient Occlusion",
+                   "With xegtao: how much of the occlusion is applied (0-1; 0: no change)");
+SBX_SETTING_INT(xegtao_debug, 0, "Graphics", "Ambient Occlusion",
+                "With xegtao: draw one of its buffers over the frame: 0 off, 1 the AO (white: "
+                "none), 2 the normals, 3 the denoiser's edges");
+SBX_SETTING_BOOL(menu_texture_filtering, false, "Graphics", "Screens",
+                 "Bilinear filtering for the menus and HUD (the XMD screens), which the game "
+                 "draws point-sampled for 720p. Recommended above the original 720p. Needs "
+                 "native_shaders");
+SBX_SETTING_BOOL(fxaa, false, "Graphics", "Anti-Aliasing",
+                 "Anti-alias the 3D view with FXAA (cheaper and softer than cmaa2; after it if "
+                 "both are on), before the post-processing reads it");
+SBX_SETTING_BOOL(aa_debug, false, "Graphics", "Anti-Aliasing",
+                 "With cmaa2 or fxaa: show the pixels they change (cmaa2: everything else "
+                 "green; fxaa: those pixels red), to check they run");
+SBX_SETTING_INT(aa_resolve, 2, "Graphics", "Anti-Aliasing",
+                "With cmaa2 or fxaa: before which of a frame's resolves of the 3D view they run "
+                "(2: the whole scene, before the post-processing; 1: the opaque scene)");
+SBX_SETTING_STRING(native_renderer_skip_pixel_shader, "", "Vulkan", "Debugging",
+                   "Leave out the draws of this pixel shader (hash in hex; a debugging aid)");
+SBX_SETTING_BOOL(native_renderer_log_glow, false, "Logging", "Native Renderer",
+                 "Log the glow history's cross-fades and write-backs once a second, by logic "
+                 "and render-only frames (a debugging aid)");
+SBX_SETTING_BOOL(native_renderer_base_level_only, false, "Vulkan", "Debugging",
+                 "Sample only each texture's first level (a debugging aid)");
+SBX_SETTING_BOOL(native_renderer_verify_textures, false, "Vulkan", "Validation",
+                 "Hash every texture used each frame, logging and reloading those whose "
+                 "memory changed with no memcpy write recorded (a debugging aid)");
+SBX_SETTING_BOOL(native_renderer_no_index_clamp, false, "Vulkan", "Debugging",
+                 "Don't clamp indices to VGT_MIN/MAX_VTX_INDX (a debugging aid)");
+SBX_SETTING_INT(native_renderer_dump_every, 0, "Vulkan", "Debugging",
+                "With native_renderer_dump: dump only the frame itself (shown image, draw "
+                "IDs, frame.json) every this many seconds of a race (a debugging aid)");
+SBX_SETTING_STRING(native_renderer_dump, "", "Vulkan", "Debugging",
+                   "Directory to dump frames into, as PFM files, with frame.json describing "
+                   "each draw: once 10 s into a race, and again whenever a file named 'now' "
+                   "appears in it (a debugging aid; see docs/native-renderer-port.md)",
+                   sbx::kRestart);
+SBX_SETTING_STRING(render_frame_dump, "", "Logging", "Native Renderer",
+                   "Where the overlay's Dump this frame button writes (a folder for each "
+                   "dump): empty for frame_dumps next to sbx.exe");
 // The SDK's (it also makes the SDK's own window, hidden in exclusive mode,
 // fullscreen); ours follows it.
-ITC_FLAG_DECLARE(bool, fullscreen);
+REXCVAR_DECLARE(bool, fullscreen);
 
 namespace renderer {
 namespace {
@@ -228,8 +220,8 @@ constexpr uint32_t kFramesInFlight = 2;
 // Where the overlay's frame dumps go (render_frame_dump), or empty if
 // there's nowhere.
 std::filesystem::path FrameDumpRoot() {
-  if (!ITC_FLAG(render_frame_dump).empty()) {
-    return std::filesystem::path(ITC_FLAG(render_frame_dump));
+  if (!SBX_GET(render_frame_dump).empty()) {
+    return std::filesystem::path(SBX_GET(render_frame_dump));
   }
   std::error_code error;
   std::filesystem::path folder = helpers::ExecutableFolder(error);
@@ -348,7 +340,7 @@ class Renderer {
 bool Renderer::CreateWindowAndInstance() {
   static Uint32 wakeup_event = SDL_RegisterEvents(1);
   auto setup = std::make_shared<WindowSetup>();
-  setup->validation = ITC_FLAG(native_renderer_validation);
+  setup->validation = SBX_GET(native_renderer_validation);
   auto future = setup->done.get_future();
   // Queued for the main thread, which runs it as it pumps events; an event
   // of our own wakes it (the SDK's loop ignores event types it doesn't know).
@@ -372,7 +364,7 @@ bool Renderer::CreateWindowAndInstance() {
   display_ = setup->display;
   ITC_LOG_INFO("native renderer: window {}x{}{}, screen {}x{}, pixel density {}",
                WindowSize().width, WindowSize().height,
-               ITC_FLAG(fullscreen) ? " (fullscreen)" : "", display_.width, display_.height,
+               REXCVAR_GET(fullscreen) ? " (fullscreen)" : "", display_.width, display_.height,
                setup->density);
   instance_ = setup->instance;
   surface_ = setup->surface;
@@ -450,6 +442,7 @@ bool Renderer::CreateDevice() {
   enabled.features.independentBlend = supported.features.independentBlend;
   enabled.features.samplerAnisotropy = supported.features.samplerAnisotropy;
   enabled.features.imageCubeArray = supported.features.imageCubeArray;
+  enabled.features.wideLines = supported.features.wideLines;
 
   float priority = 1.0f;
   VkDeviceQueueCreateInfo queue_info{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
@@ -485,6 +478,8 @@ bool Renderer::CreateDevice() {
   context_.demote_to_helper_invocation = enabled13.shaderDemoteToHelperInvocation;
   context_.sampler_anisotropy = enabled.features.samplerAnisotropy;
   context_.max_sampler_anisotropy = properties.limits.maxSamplerAnisotropy;
+  context_.wide_lines = enabled.features.wideLines;
+  context_.max_line_width = properties.limits.lineWidthRange[1];
   context_.vendor_id = properties.vendorID;
   context_.device_id = properties.deviceID;
   std::copy(std::begin(properties.pipelineCacheUUID), std::end(properties.pipelineCacheUUID),
@@ -628,8 +623,8 @@ bool Renderer::Init(uint8_t* base) {
       !passes_.Init(context_, base, kFramesInFlight, ResolutionScale(swapchain_extent_))) {
     return false;
   }
-  passes_.set_mirror_by_tick(ITC_FLAG(native_renderer_mirror_by_tick));
-  passes_.set_mirror_to_both(ITC_FLAG(native_renderer_mirror_to_both));
+  passes_.set_mirror_by_tick(SBX_GET(native_renderer_mirror_by_tick));
+  passes_.set_mirror_to_both(SBX_GET(native_renderer_mirror_to_both));
   // The ImGui overlay (F3, F4); the renderer runs without it if it can't.
   overlay::InitInfo overlay_info;
   overlay_info.window = window_;
@@ -656,7 +651,7 @@ VkCommandBuffer Renderer::BeginFrame() {
   Frame& frame = frames_[frame_index_];
   if (!recording_) {
     vk::vkWaitForFences(device_, 1, &frame.done, VK_TRUE, UINT64_MAX);
-    if (ITC_FLAG(native_renderer_serialize)) {
+    if (SBX_GET(native_renderer_serialize)) {
       vk::vkQueueWaitIdle(queue_);
     }
     vk::vkResetCommandBuffer(frame.commands, 0);
@@ -690,12 +685,12 @@ VkCommandBuffer Renderer::BeginFrame() {
       }
     }
     // A dump starts 10 s into a race, or when asked for.
-    const std::string& dump_root = ITC_FLAG(native_renderer_dump);
+    const std::string& dump_root = SBX_GET(native_renderer_dump);
     if (!dump_root.empty() && !dumping_) {
       std::error_code error;
       bool asked = std::filesystem::remove(dump_root + "/now", error);
       // With dump_every: a frame every that many seconds of a race.
-      int32_t every = ITC_FLAG(native_renderer_dump_every);
+      int32_t every = SBX_GET(native_renderer_dump_every);
       bool in_race = passes_.frame_resolve_count() >= 20;
       bool periodic = every > 0 && in_race && Clock::now() - last_dump_ >= std::chrono::seconds(every);
       if (asked || periodic ||
@@ -710,7 +705,7 @@ VkCommandBuffer Renderer::BeginFrame() {
       }
     }
     // The cycle: started on request, a step every 3 s.
-    const std::string& cycle_root = ITC_FLAG(native_renderer_cycle);
+    const std::string& cycle_root = SBX_GET(native_renderer_cycle);
     if (!cycle_root.empty()) {
       std::error_code error;
       if (cycle_steps_.empty() && std::filesystem::remove(cycle_root + "/now", error)) {
@@ -732,28 +727,25 @@ VkCommandBuffer Renderer::BeginFrame() {
         passes_.set_skip_pixel_shader(cycle_steps_[cycle_step_].skip);
       }
     }
-    if (const std::string& skip = ITC_FLAG(native_renderer_skip_pixel_shader); !skip.empty()) {
+    if (const std::string& skip = SBX_GET(native_renderer_skip_pixel_shader); !skip.empty()) {
       passes_.set_skip_pixel_shader(std::strtoull(skip.c_str(), nullptr, 16));
     }
-    passes_.set_skip_motion_blur(!ITC_FLAG(motion_blur));
-    passes_.set_anti_aliasing(ITC_FLAG(cmaa2), ITC_FLAG(fxaa),
-                              uint32_t(std::max(ITC_FLAG(aa_resolve), 1)),
-                              ITC_FLAG(aa_debug),
-                              std::strtof(ITC_FLAG(cmaa2_threshold).c_str(), nullptr));
-    passes_.set_msaa(ITC_FLAG(msaa));
-    passes_.set_gbuffer(ITC_FLAG(gbuffer), uint32_t(std::max(ITC_FLAG(gbuffer_resolve), 1)),
-                        ITC_FLAG(gbuffer_debug),
-                        std::strtof(ITC_FLAG(gbuffer_debug_depth_range).c_str(), nullptr),
-                        std::strtof(ITC_FLAG(gbuffer_debug_velocity_scale).c_str(), nullptr));
-    passes_.set_xegtao(ITC_FLAG(xegtao), ITC_FLAG(xegtao_quality), ITC_FLAG(xegtao_denoise),
-                       std::strtof(ITC_FLAG(xegtao_radius).c_str(), nullptr),
-                       std::strtof(ITC_FLAG(xegtao_strength).c_str(), nullptr),
-                       ITC_FLAG(xegtao_debug),
-                       std::strtof(ITC_FLAG(xegtao_temporal).c_str(), nullptr),
-                       ITC_FLAG(xegtao_mirror));
+    passes_.set_skip_motion_blur(!SBX_GET(motion_blur));
+    passes_.set_menu_texture_filtering(SBX_GET(menu_texture_filtering));
+    passes_.set_anti_aliasing(SBX_GET(cmaa2), SBX_GET(fxaa),
+                              uint32_t(std::max(SBX_GET(aa_resolve), 1)),
+                              SBX_GET(aa_debug),
+                              std::strtof(SBX_GET(cmaa2_threshold).c_str(), nullptr));
+    passes_.set_msaa(SBX_GET(msaa));
+    passes_.set_xegtao(SBX_GET(xegtao), SBX_GET(xegtao_quality), SBX_GET(xegtao_denoise),
+                       std::strtof(SBX_GET(xegtao_radius).c_str(), nullptr),
+                       std::strtof(SBX_GET(xegtao_strength).c_str(), nullptr),
+                       SBX_GET(xegtao_debug),
+                       std::strtof(SBX_GET(xegtao_temporal).c_str(), nullptr),
+                       SBX_GET(xegtao_mirror));
     // The shutter is a length in seconds, or a fraction such as 1/60.
     float shutter = 1.0f / 8.0f;
-    if (const std::string& text = ITC_FLAG(blur_frame_blend_shutter); !text.empty()) {
+    if (const std::string& text = SBX_GET(blur_frame_blend_shutter); !text.empty()) {
       const float value = std::strtof(text.c_str(), nullptr);
       if (const size_t slash = text.find('/'); slash != std::string::npos) {
         const float denominator = std::strtof(text.c_str() + slash + 1, nullptr);
@@ -762,35 +754,35 @@ VkCommandBuffer Renderer::BeginFrame() {
         shutter = value;
       }
     }
-    passes_.set_frame_blend(std::strtof(ITC_FLAG(blur_frame_blend).c_str(), nullptr),
-                            std::strtof(ITC_FLAG(blur_frame_blend_center).c_str(), nullptr),
-                            std::strtof(ITC_FLAG(blur_frame_blend_edge).c_str(), nullptr), shutter);
+    passes_.set_frame_blend(std::strtof(SBX_GET(blur_frame_blend).c_str(), nullptr),
+                            std::strtof(SBX_GET(blur_frame_blend_center).c_str(), nullptr),
+                            std::strtof(SBX_GET(blur_frame_blend_edge).c_str(), nullptr), shutter);
     // Its first frame describes each draw (cheaply: the effect being looked
     // for went away while frames were recorded slowly).
     passes_.set_record_draws(dumping_ && dump_step_ == 0);
-    passes_.set_check_mirror_frames(ITC_FLAG(native_renderer_check_mirror));
-    passes_.set_copy_all(ITC_FLAG(native_renderer_copy_all));
-    passes_.set_skip_repeated_state(ITC_FLAG(native_renderer_skip_repeated_state));
-    passes_.set_reuse_constants(ITC_FLAG(native_renderer_reuse_constants));
-    passes_.set_log_constant_changes(ITC_FLAG(native_renderer_log_constant_changes));
-    passes_.set_log_register_reads(ITC_FLAG(native_renderer_log_register_reads));
-    passes_.set_log_index_ranges(ITC_FLAG(native_renderer_log_index_ranges));
-    passes_.set_log_texture_bindings(ITC_FLAG(native_renderer_log_texture_bindings));
-    passes_.set_log_shader_lookups(ITC_FLAG(native_renderer_log_shader_lookups));
-    passes_.set_cache_shader_lookups(ITC_FLAG(native_renderer_cache_shader_lookups));
-    passes_.set_reuse_texture_sets(ITC_FLAG(native_renderer_reuse_texture_sets));
-    passes_.set_log_glow(ITC_FLAG(native_renderer_log_glow));
-    passes_.set_cache_index_ranges(ITC_FLAG(native_renderer_cache_index_ranges));
-    passes_.set_verify_mirror(ITC_FLAG(native_renderer_verify_mirror));
-    passes_.set_check_late_writes(ITC_FLAG(native_renderer_check_late_writes));
-    passes_.set_check_clobbers(ITC_FLAG(native_renderer_check_clobbers));
+    passes_.set_check_mirror_frames(SBX_GET(native_renderer_check_mirror));
+    passes_.set_copy_all(SBX_GET(native_renderer_copy_all));
+    passes_.set_skip_repeated_state(SBX_GET(native_renderer_skip_repeated_state));
+    passes_.set_reuse_constants(SBX_GET(native_renderer_reuse_constants));
+    passes_.set_log_constant_changes(SBX_GET(native_renderer_log_constant_changes));
+    passes_.set_log_register_reads(SBX_GET(native_renderer_log_register_reads));
+    passes_.set_log_index_ranges(SBX_GET(native_renderer_log_index_ranges));
+    passes_.set_log_texture_bindings(SBX_GET(native_renderer_log_texture_bindings));
+    passes_.set_log_shader_lookups(SBX_GET(native_renderer_log_shader_lookups));
+    passes_.set_cache_shader_lookups(SBX_GET(native_renderer_cache_shader_lookups));
+    passes_.set_reuse_texture_sets(SBX_GET(native_renderer_reuse_texture_sets));
+    passes_.set_log_glow(SBX_GET(native_renderer_log_glow));
+    passes_.set_cache_index_ranges(SBX_GET(native_renderer_cache_index_ranges));
+    passes_.set_verify_mirror(SBX_GET(native_renderer_verify_mirror));
+    passes_.set_check_late_writes(SBX_GET(native_renderer_check_late_writes));
+    passes_.set_check_clobbers(SBX_GET(native_renderer_check_clobbers));
     passes_.set_watch_draws(
-        ITC_FLAG(native_renderer_watch_draws),
-        std::strtoull(ITC_FLAG(native_renderer_watch_pixel_shader).c_str(), nullptr, 16));
-    passes_.set_hide_cubes(ITC_FLAG(native_renderer_hide_cubes));
-    passes_.set_no_index_clamp(ITC_FLAG(native_renderer_no_index_clamp));
-    passes_.set_base_level_only(ITC_FLAG(native_renderer_base_level_only));
-    passes_.set_verify_textures(ITC_FLAG(native_renderer_verify_textures));
+        SBX_GET(native_renderer_watch_draws),
+        std::strtoull(SBX_GET(native_renderer_watch_pixel_shader).c_str(), nullptr, 16));
+    passes_.set_hide_cubes(SBX_GET(native_renderer_hide_cubes));
+    passes_.set_no_index_clamp(SBX_GET(native_renderer_no_index_clamp));
+    passes_.set_base_level_only(SBX_GET(native_renderer_base_level_only));
+    passes_.set_verify_textures(SBX_GET(native_renderer_verify_textures));
     recording_ = true;
   }
   return frame.commands;
@@ -845,7 +837,7 @@ void Renderer::EndFrame() {
   uint32_t frame_draws = frame_draws_;
   uint32_t frame_commands = frame_commands_;
   frame_commands_ = frame_draws_ = 0;
-  if (ITC_FLAG(log_render_only_draws)) {
+  if (SBX_GET(log_render_only_draws)) {
     LogRenderOnlyDraws(frame_draws);
   }
 
@@ -858,15 +850,15 @@ void Renderer::EndFrame() {
   bool cycle_capture = !cycle_steps_.empty() && !cycle_captured_ &&
                        Clock::now() - cycle_step_start_ >= std::chrono::seconds(2);
   VkExtent2D source =
-      dump ? passes_.EndFrame(commands, ITC_FLAG(native_renderer_show_resolve), true,
+      dump ? passes_.EndFrame(commands, SBX_GET(native_renderer_show_resolve), true,
                               dump_step_ ? dump_steps_[dump_step_ - 1].name : "shown",
                               dump_step_ == 0 &&
-                                  (dump_frame_only_ || ITC_FLAG(native_renderer_dump_every) <= 0))
+                                  (dump_frame_only_ || SBX_GET(native_renderer_dump_every) <= 0))
       : cycle_capture
-          ? passes_.EndFrame(commands, ITC_FLAG(native_renderer_show_resolve), true,
+          ? passes_.EndFrame(commands, SBX_GET(native_renderer_show_resolve), true,
                              fmt::format("{:02}_{}", cycle_step_, cycle_steps_[cycle_step_].name),
                              false)
-          : passes_.EndFrame(commands, ITC_FLAG(native_renderer_show_resolve), false);
+          : passes_.EndFrame(commands, SBX_GET(native_renderer_show_resolve), false);
   Frame& frame = frames_[frame_index_];
 
   // For the overlay: this frame's time and work.
@@ -1038,7 +1030,7 @@ void Renderer::EndFrame() {
     if (dump_frame_only_) {
       overlay::Notify(fmt::format("Frame dumped to {}", dump_directory_));
     }
-    if (dump_step_ == 0 && !dump_frame_only_ && ITC_FLAG(native_renderer_dump_every) <= 0) {
+    if (dump_step_ == 0 && !dump_frame_only_ && SBX_GET(native_renderer_dump_every) <= 0) {
       // Each pixel shader the main view was drawn with, left out; then all
       // textures from memory, and all resolve destinations, hidden.
       using Hide = TextureCache::Hide;
@@ -1100,7 +1092,7 @@ void Renderer::LogStats() {
     }
     ITC_LOG_INFO("native renderer: failed draws a frame by reason:{}", reasons);
   }
-  if (ITC_FLAG(log_gpu_memory)) {
+  if (SBX_GET(log_gpu_memory)) {
     ITC_LOG_INFO("native renderer: GPU memory: {}", gpu_memory::Describe());
   }
   if (std::string by_tick = passes_.TakeMirrorByTick(); !by_tick.empty()) {
@@ -1110,7 +1102,7 @@ void Renderer::LogStats() {
                  "most waiting {}",
                  by_tick, missing, most);
   }
-  if (ITC_FLAG(native_renderer_verify_mirror)) {
+  if (SBX_GET(native_renderer_verify_mirror)) {
     ITC_LOG_INFO("native renderer: mirror check: of {} ranges not copied and checked, {} "
                  "differed from guest memory ({:.1f} MB){}",
                  view.mirror_checked, view.mirror_stale, view.mirror_stale_bytes / 1048576.0,
@@ -1250,7 +1242,7 @@ void Renderer::LogStats() {
                  "constant's size, e.g. {:08X}: {} bytes, {} needed (vertex {}, stride {} words)",
                  double(view.vertex_overruns) / frames, v[0], v[1], v[2], v[3], v[4]);
   }
-  if (ITC_FLAG(native_renderer_watch_draws)) {
+  if (SBX_GET(native_renderer_watch_draws)) {
     uint64_t changes, watched;
     std::vector<std::string> lines = passes_.TakeWatchLines(changes, watched);
     ITC_LOG_INFO("native renderer: {} of {} main view draws changed inputs since the previous "
@@ -1259,22 +1251,22 @@ void Renderer::LogStats() {
       ITC_LOG_INFO("native renderer: changed: {}", line);
     }
   }
-  if (ITC_FLAG(native_renderer_check_clobbers)) {
+  if (SBX_GET(native_renderer_check_clobbers)) {
     ITC_LOG_INFO("native renderer: {}", passes_.TakeClobbers());
   }
-  if (ITC_FLAG(native_renderer_check_late_writes)) {
+  if (SBX_GET(native_renderer_check_late_writes)) {
     ITC_LOG_INFO("native renderer: {}", passes_.TakeLateWrites());
   }
-  if (ITC_FLAG(native_renderer_check_mirror)) {
+  if (SBX_GET(native_renderer_check_mirror)) {
     ITC_LOG_INFO("native renderer: between frames, {}", passes_.TakeMirrorChanges());
   }
-  if (ITC_FLAG(native_renderer_log_index_ranges)) {
+  if (SBX_GET(native_renderer_log_index_ranges)) {
     ITC_LOG_INFO("native renderer: {}", passes_.TakeIndexRanges());
   }
-  if (ITC_FLAG(native_renderer_log_texture_bindings)) {
+  if (SBX_GET(native_renderer_log_texture_bindings)) {
     ITC_LOG_INFO("native renderer: {}", passes_.TakeTextureBindings());
   }
-  if (ITC_FLAG(native_renderer_log_shader_lookups)) {
+  if (SBX_GET(native_renderer_log_shader_lookups)) {
     ITC_LOG_INFO("native renderer: {}", passes_.TakeShaderLookups());
   }
   if (view.invisible) {

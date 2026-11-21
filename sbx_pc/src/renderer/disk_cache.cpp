@@ -2,22 +2,22 @@
 
 #include "helpers/executable.h"
 
-#include "base/flags.h"
 #include "base/log.h"
+#include "base/settings.h"
 
 #ifdef _WIN32
 #include <cstring>
 #include <string>
 #endif
 
-ITC_FLAG_BOOL(native_renderer_disk_cache, true, "SBX",
-              "Keep translated shaders and compiled pipelines in cache/ next to the "
-              "executable between sessions");
+SBX_SETTING_BOOL(native_renderer_disk_cache, true, "Vulkan", "Caching",
+                 "Keep translated shaders and compiled pipelines in cache/ next to the "
+                 "executable between sessions");
 
 namespace renderer {
 
 std::filesystem::path DiskCacheDirectory() {
-  if (!ITC_FLAG(native_renderer_disk_cache)) {
+  if (!SBX_GET(native_renderer_disk_cache)) {
     return {};
   }
   static const std::filesystem::path directory = [] {

@@ -2,7 +2,8 @@
 // default): the stats' and progress' resets, the options' and control
 // maps' defaults, the course records, a save slot's create and delete,
 // the players' controllers, the menu lists' set-up and the title screen's
-// player reset.
+// player reset, the two-player block, a course record's look-up and the
+// boot objects' teardown.
 //
 // The originals clear with memset and then store each field's default, 0s
 // included; here the memset's clear is done in place and only the fields
@@ -12,23 +13,23 @@
 // function; the course record's own reset (sub_82105E20), the heap and
 // VirtualAlloc stay recompiled.
 
+#include "base/settings.h"
 #include "game/race_screens.h"
 #include "game/save_data.h"
 #include "hooks/native_calls.h"
 
-#include <rex/cvar.h>
-
 #include <cstring>
 
-REXCVAR_DEFINE_BOOL(native_save_data, true, "SBX",
-                    "Our own C++ for the save data's defaults (stats, progress, options, "
-                    "course records, a slot's create and delete, the menu lists' set-up) "
-                    "instead of the recompiled functions; the heap and the progress defaults "
-                    "stay recompiled");
+SBX_SETTING_BOOL(native_save_data, true, "Overrides", "Data and Saves",
+                 "Our own C++ for the save data's defaults (stats, progress, options, "
+                 "course records, a slot's create and delete, the menu lists' set-up) "
+                 "instead of the recompiled functions; the heap and the progress defaults "
+                 "stay recompiled");
 
 namespace {
 
 using game::ControlMap;
+using game::CourseKey;
 using game::CourseRecords;
 using game::MenuList;
 using game::SaveData;
@@ -38,11 +39,12 @@ using game::SaveOptions;
 using game::SaveStats;
 using game::StatPair;
 using game::StatRecord;
+using game::TwoPlayerSave;
 using guest::At;
 using guest::Guest;
 using guest::u32_be;
 
-bool On() { return REXCVAR_GET(native_save_data); }
+bool On() { return SBX_GET(native_save_data); }
 
 // The save slots (a word each), the players' controllers and the flag set
 // once they're reset, and the title screen's menu list and state (all
@@ -53,9 +55,10 @@ constexpr uint32_t kControllersSet = 0x826B73F8;
 constexpr uint32_t kTitleMenuList = 0x8280DE40;
 constexpr uint32_t kTitleState = 0x8280DE44;
 constexpr uint32_t kPlayerFlags = 0x826AA820;
-constexpr uint32_t kNewGameWord = 0x826B5870;
+constexpr uint32_t kPlayClock = 0x826B5870;  // Frames played.
 
-// The defaults' tables the getters return (writable).
+// The defaults' tables (writable): what the getters return (and NewGame
+// copies).
 constexpr uint32_t kNewGameTable60 = 0x826B4D88;
 constexpr uint32_t kUnlockedTable = 0x826B2D24;
 constexpr uint32_t kLeftOutTable = 0x826B3B14;
@@ -102,14 +105,12 @@ void ResetStatRecords(game::StatRecords& records) {
 }
 
 // Stats::Reset (sub_82113880): cleared, then its records' indices -1, +5956
-// = 1 and +6008 = 3; returns its records' address, as the original leaves
-// r3.
-uint32_t ResetStats(SaveStats& stats) {
+// = 1 and +6008 = 3.
+void ResetStats(SaveStats& stats) {
   Clear(stats);
   ResetStatRecords(stats.records);
   stats.unknown_5956 = 1;
   stats.unknown_6008 = 3;
-  return guest::AddressOf(&stats.records);
 }
 
 // Stats::Stats (sub_82105830): its floats and the words after them 0.
@@ -142,8 +143,8 @@ void ResetListIndex(SaveListIndex& list) {
 
 // Progress::Clear (sub_82113D28): the save up to its course records
 // cleared, its header's entries, its stats reset, then its other
-// defaults. Returns what Stats::Reset leaves.
-uint32_t ClearProgress(SaveData& save) {
+// defaults.
+void ClearProgress(SaveData& save) {
   std::memset(&save, 0, offsetof(SaveData, course_records));
   for (SaveEntry* entries : {save.entries_12, save.entries_32}) {
     for (int i = 0; i < 2; i++) {
@@ -151,24 +152,23 @@ uint32_t ClearProgress(SaveData& save) {
       entries[i].unknown_6 = 1;
     }
   }
-  const uint32_t r3 = ResetStats(save.stats);
+  ResetStats(save.stats);
   save.unknown_6108 = 14;
   save.unknown_6112 = 48;
   save.unknown_6116 = 3000;
-  ResetListIndex(save.list_6120);
-  save.unknown_104532 = 50;
+  ResetListIndex(save.garage.list);
+  save.garage.unknown_98412 = 50;
   save.unknown_109652 = 4;
   save.unknown_119900 = -1;
-  return r3;
 }
 
-// Options::SetDefaults (sub_82105AB8): returns its last map, as the
-// original leaves r3.
-uint32_t SetDefaultOptions(SaveOptions& options) {
+// Options::SetDefaults (sub_82105AB8): the options and their four control
+// maps.
+void SetDefaultOptions(SaveOptions& options) {
   for (u32_be& word : options.unknown_0) {
     word = 1;
   }
-  options.unknown_24 = 2;
+  options.camera_view = 2;
   options.unknown_28[0] = 15;
   options.unknown_28[1] = 15;
   options.unknown_32 = 0;
@@ -180,7 +180,6 @@ uint32_t SetDefaultOptions(SaveOptions& options) {
       map.buttons[i] = kDefaultButtons[i];
     }
   }
-  return guest::AddressOf(&options.maps[3]);
 }
 
 // MenuList::Init (sub_82209868): the count, the most shown and the words
@@ -211,6 +210,19 @@ void InitMenuList(Guest& g, MenuList* list, uint32_t count, uint32_t shown, uint
   }
 }
 
+// CourseRecords::Reset (sub_82105E98): the header cleared, then each
+// record's own reset (sub_82105E20).
+void ResetCourseRecords(Guest& g, CourseRecords& records) {
+  for (u32_be& word : records.unknown_0) {
+    word = 0;
+  }
+  records.unknown_16[1] = 0;
+  records.unknown_16[0] = 0;
+  for (auto& record : records.records) {
+    g.Call(sub_82105E20, record);
+  }
+}
+
 // SaveData::Delete (sub_82105748): the slot's save freed (operator delete)
 // and its word cleared.
 void DeleteSave(Guest& g, uint32_t slot) {
@@ -218,20 +230,38 @@ void DeleteSave(Guest& g, uint32_t slot) {
   SaveSlot(slot) = 0;
 }
 
-// SaveData::Create (sub_82105938): a save from operator new, its stats
-// made, stored to the slot (0 when the allocation failed, as the original
-// goes on with it), then its course records reset, Progress::SetDefaults,
-// the options' defaults and sub_82105B48 on +128904.
-void CreateSave(Guest& g, uint32_t slot) {
-  const uint32_t address = g.Call(sub_8258C000, SaveData::kBytes);  // operator new
+// A member of the save at `address`, which can be 0 (a failed allocation
+// the originals go on with).
+template <typename T>
+T& SaveMember(uint32_t address, size_t offset) {
+  return *At<T>(address + uint32_t(offset));
+}
+
+// SaveData::CreateTwoPlayerBlock (sub_821058B0): the two-player block
+// from operator new, both players' stats made, stored to slot 1 (0 when
+// the allocation failed, as the original goes on with it), then a new
+// game's defaults (SaveData::NewGame, through unlock_cut_cars' override)
+// on each player's part and the options' defaults.
+void CreateTwoPlayerBlock(Guest& g) {
+  const uint32_t address = g.Call(sub_8258C000, uint32_t(sizeof(TwoPlayerSave)));  // operator new
   if (address != 0) {
-    ConstructStats(At<SaveData>(address)->stats);
+    for (auto& player : At<TwoPlayerSave>(address)->players) {
+      ConstructStats(At<SaveData>(guest::AddressOf(player))->stats);
+    }
   }
-  SaveSlot(slot) = address;
-  g.Call(sub_82105E98, address + uint32_t(offsetof(SaveData, course_records)));
-  g.Call(sub_82113FB0, SaveSlot(slot));
-  g.Call(sub_82105AB8, SaveSlot(slot) + uint32_t(offsetof(SaveData, options)));
-  g.Call(sub_82105B48, SaveSlot(slot) + uint32_t(offsetof(SaveData, unknown_128904)));
+  SaveSlot(1) = address;
+  g.Call(sub_82113FB0, address);  // SaveData::NewGame
+  g.Call(sub_82113FB0, SaveSlot(1) + TwoPlayerSave::kPlayerBytes);
+  SetDefaultOptions(SaveMember<SaveOptions>(SaveSlot(1), offsetof(TwoPlayerSave, options)));
+}
+
+// BitSet400::SetAll (sub_821134F8): bits 0 to 399 set (12 full words and
+// 0xFFFF).
+void SetAllBits400(u32_be* words) {
+  for (int i = 0; i < 12; i++) {
+    words[i] = 0xFFFFFFFFu;
+  }
+  words[12] = 0x0000FFFFu;
 }
 
 // Players::ResetControllers (sub_8209F718): controller i = i, then the
@@ -244,6 +274,34 @@ void ResetControllers() {
 }
 
 }  // namespace
+
+// SaveData::Create: a save from operator new, its stats made, stored to the
+// slot (0 when the allocation failed, as the original goes on with it),
+// then its course records reset, a new game's defaults (SaveData::NewGame,
+// through unlock_cut_cars' override), the options' defaults and
+// sub_82105B48 on +128904.
+void game::CreateSave(Guest& g, uint32_t slot) {
+  const uint32_t address = g.Call(sub_8258C000, SaveData::kBytes);  // operator new
+  if (address != 0) {
+    ConstructStats(At<SaveData>(address)->stats);
+  }
+  SaveSlot(slot) = address;
+  ResetCourseRecords(g, SaveMember<CourseRecords>(address, offsetof(SaveData, course_records)));
+  g.Call(sub_82113FB0, SaveSlot(slot));  // SaveData::NewGame
+  SetDefaultOptions(SaveMember<SaveOptions>(SaveSlot(slot), offsetof(SaveData, options)));
+  g.Call(sub_82105B48, SaveSlot(slot) + uint32_t(offsetof(SaveData, unknown_128904)));
+}
+
+// SaveData::Teardown: the input recordings (sub_82105070), the replay
+// (sub_82105090) and the race data (sub_820FFA58) freed, save slot 0
+// deleted, then the data tables freed (sub_82117118).
+void game::TearDownBootObjects(Guest& g) {
+  g.Call(sub_82105070);
+  g.Call(sub_82105090);
+  g.Call(sub_820FFA58);
+  DeleteSave(g, 0);
+  g.Call(sub_82117118);
+}
 
 #define SBX_SAVE_DATA_FALLBACK(name) \
   REX_FUNC_PROLOGUE();               \
@@ -268,23 +326,19 @@ extern "C" REX_FUNC(sub_82113828) {
 // Stats::Reset.
 extern "C" REX_FUNC(sub_82113880) {
   SBX_SAVE_DATA_FALLBACK(sub_82113880)
-  ctx.r3.u64 = ResetStats(*At<SaveStats>(ctx.r3.u32));
+  ResetStats(*At<SaveStats>(ctx.r3.u32));
 }
 
 // Progress::Clear.
 extern "C" REX_FUNC(sub_82113D28) {
   SBX_SAVE_DATA_FALLBACK(sub_82113D28)
-  ctx.r3.u64 = ClearProgress(*At<SaveData>(ctx.r3.u32));
+  ClearProgress(*At<SaveData>(ctx.r3.u32));
 }
 
-// BitSet400::SetAll: bits 0 to 399 set (12 full words and 0xFFFF).
+// BitSet400::SetAll: r3 the set.
 extern "C" REX_FUNC(sub_821134F8) {
   SBX_SAVE_DATA_FALLBACK(sub_821134F8)
-  u32_be* words = At<u32_be>(ctx.r3.u32);
-  for (int i = 0; i < 12; i++) {
-    words[i] = 0xFFFFFFFFu;
-  }
-  words[12] = 0x0000FFFFu;
+  SetAllBits400(At<u32_be>(ctx.r3.u32));
 }
 
 // ControlMap::SetDefault.
@@ -299,22 +353,13 @@ extern "C" REX_FUNC(sub_82105A18) {
 // Options::SetDefaults: the options and their four control maps.
 extern "C" REX_FUNC(sub_82105AB8) {
   SBX_SAVE_DATA_FALLBACK(sub_82105AB8)
-  ctx.r3.u64 = SetDefaultOptions(*At<SaveOptions>(ctx.r3.u32));
+  SetDefaultOptions(*At<SaveOptions>(ctx.r3.u32));
 }
 
-// CourseRecords::Reset: the header cleared, then each record's own reset
-// (sub_82105E20).
+// CourseRecords::Reset: r3 the course records.
 extern "C" REX_FUNC(sub_82105E98) {
   SBX_SAVE_DATA_FALLBACK(sub_82105E98)
-  CourseRecords* records = At<CourseRecords>(ctx.r3.u32);
-  for (u32_be& word : records->unknown_0) {
-    word = 0;
-  }
-  records->unknown_16[1] = 0;
-  records->unknown_16[0] = 0;
-  for (auto& record : records->records) {
-    g.Call(sub_82105E20, record);
-  }
+  ResetCourseRecords(g, *At<CourseRecords>(ctx.r3.u32));
 }
 
 // SaveData::Delete: r3 the slot.
@@ -326,7 +371,35 @@ extern "C" REX_FUNC(sub_82105748) {
 // SaveData::Create: r3 the slot.
 extern "C" REX_FUNC(sub_82105938) {
   SBX_SAVE_DATA_FALLBACK(sub_82105938)
-  CreateSave(g, ctx.r3.u32);
+  game::CreateSave(g, ctx.r3.u32);
+}
+
+// SaveData::CreateTwoPlayerBlock.
+extern "C" REX_FUNC(sub_821058B0) {
+  SBX_SAVE_DATA_FALLBACK(sub_821058B0)
+  CreateTwoPlayerBlock(g);
+}
+
+// SaveData::TwoPlayerBlock: slot 1's word.
+extern "C" REX_FUNC(sub_821057E8) {
+  SBX_SAVE_DATA_FALLBACK(sub_821057E8)
+  ctx.r3.u64 = uint32_t(SaveSlot(1));
+}
+
+// CourseRecords::Of: r3 the course records, r4 the key. Returns the key's
+// record (two a course, by traffic; the key isn't checked).
+extern "C" REX_FUNC(sub_82105D88) {
+  SBX_SAVE_DATA_FALLBACK(sub_82105D88)
+  CourseRecords* records = At<CourseRecords>(ctx.r3.u32);
+  const CourseKey* key = At<CourseKey>(ctx.r4.u32);
+  const uint32_t index = uint32_t(key->course) * 2 + uint32_t(key->traffic);
+  ctx.r3.u64 = uint32_t(guest::AddressOf(records->records) + sizeof(records->records[0]) * index);
+}
+
+// SaveData::Teardown (probably; the boot objects' unload).
+extern "C" REX_FUNC(sub_821057F8) {
+  SBX_SAVE_DATA_FALLBACK(sub_821057F8)
+  game::TearDownBootObjects(g);
 }
 
 // Players::ResetControllers.
@@ -340,9 +413,16 @@ extern "C" REX_FUNC(sub_8209F718) {
 // +36 to +56.
 extern "C" REX_FUNC(sub_82209868) {
   SBX_SAVE_DATA_FALLBACK(sub_82209868)
-  const uint32_t sp = ctx.r1.u32;
-  const uint32_t words[6] = {ctx.r7.u32, ctx.r8.u32, ctx.r9.u32, ctx.r10.u32,
-                             *At<u32_be>(sp + 84), *At<u32_be>(sp + 92)};
+  // The 9th and 10th arguments: the caller's stack arguments.
+  struct StackArguments {
+    uint8_t linkage[84];
+    u32_be ninth;
+    uint8_t unknown_88[4];
+    u32_be tenth;
+  };
+  const StackArguments* stack = At<StackArguments>(ctx.r1.u32);
+  const uint32_t words[6] = {ctx.r7.u32, ctx.r8.u32, ctx.r9.u32, ctx.r10.u32, stack->ninth,
+                             stack->tenth};
   InitMenuList(g, At<MenuList>(ctx.r3.u32), ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, words);
 }
 
@@ -358,7 +438,7 @@ extern "C" REX_FUNC(sub_8221F7A8) {
     *guest::Element<u32_be>(kPlayerFlags, i) = 1;
   }
   DeleteSave(g, 0);
-  CreateSave(g, 0);
+  game::CreateSave(g, 0);
   ResetControllers();
 }
 
@@ -389,13 +469,12 @@ extern "C" REX_FUNC(sub_820CCAA0) {
 }
 
 // SaveData::NewGame: r3 the save. The save cleared (Progress::Clear) and a
-// new game's state set, in the original's order: the tables from the
-// getters copied in (memcpy), the car unlocks less the left-out ones
-// (worked out in the original's 176-byte frame at +80), the first unlock
-// word's bits 0x6BFDF3 set, the 400 bits set but 310 to 375, and +6088
-// from [0x826B5870]. Returns what BitSet400::SetAll leaves. Called from
-// unlock_cut_cars' override (unlock_cut_cars.cpp), which sets the cut
-// cars' bits after it.
+// new game's state set, in the original's order: the defaults' tables
+// copied in (memcpy), the car unlocks less the left-out ones (worked out in
+// the original's 176-byte frame at +80, which memcpy is handed), the first
+// unlock word's bits 0x6BFDF3 set, the 400 bits set but 310 to 375, and the
+// play clock's mark. Called from unlock_cut_cars' override
+// (unlock_cut_cars.cpp), which sets the cut cars' bits after it.
 void hooks::NativeSaveData_NewGame(PPCContext& ctx, uint8_t* base) {
   if (!On()) {
     __imp__sub_82113FB0(ctx, base);
@@ -403,29 +482,33 @@ void hooks::NativeSaveData_NewGame(PPCContext& ctx, uint8_t* base) {
   }
   Guest g(ctx, base);
   SaveData* save = At<SaveData>(ctx.r3.u32);
+  struct NewGameFrame {
+    uint8_t linkage[80];
+    u32_be unlocked[15];
+  };
   guest::StackFrame frame(ctx, 176);
-  u32_be* unlocked = At<u32_be>(frame.Local(80));
+  u32_be* unlocked = At<NewGameFrame>(frame.Local(0))->unlocked;
 
-  g.Call(sub_82113D28, save);
+  ClearProgress(*save);
   save->unknown_0 = 1;
-  g.Call(sub_8258CB90, save->unknown_104552, g.Call(sub_820CCA60), 60u);  // memcpy
-  g.Call(sub_8258CB90, save->unknown_104672, g.Call(sub_820CCA90), 28u);
-  g.Call(sub_8258CB90, save->unknown_104700, g.Call(sub_820CCAA0), 28u);
+  g.Call(sub_8258CB90, save->unknown_104552, kNewGameTable60, 60u);  // memcpy
+  g.Call(sub_8258CB90, save->unknown_104672, kNewGameTableA, 28u);
+  g.Call(sub_8258CB90, save->unknown_104700, kNewGameTableB, 28u);
   save->unknown_104728 = 0x703;
   save->unknown_104740 = 0;
   save->unknown_104736 = 0xCF0F;
 
-  g.Call(sub_8258CB90, unlocked, g.Call(sub_820CCA70), 60u);
-  const u32_be* left_out = At<u32_be>(g.Call(sub_820CCA80));
+  g.Call(sub_8258CB90, unlocked, kUnlockedTable, 60u);
+  const u32_be* left_out = At<u32_be>(kLeftOutTable);
   for (int i = 0; i < 15; i++) {
     unlocked[i] = unlocked[i] & ~uint32_t(left_out[i]);
   }
   g.Call(sub_8258CB90, save->unknown_104612, unlocked, 60u);
   save->car_unlocks = save->car_unlocks | 0x6BFDF3u;
 
-  g.Call(sub_821134F8, save->bits_109596);
+  SetAllBits400(save->bits_109596);
   for (uint32_t bit = 310; bit <= 375; bit++) {
     save->bits_109596[bit >> 5] &= ~(1u << (bit & 31));
   }
-  save->stats.unknown_6040 = *At<u32_be>(kNewGameWord);
+  save->stats.play_clock_mark = *At<u32_be>(kPlayClock);
 }

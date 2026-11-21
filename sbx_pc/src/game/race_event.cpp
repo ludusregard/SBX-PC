@@ -1,13 +1,12 @@
 // The race event as our own C++ (--native_race_event, on by default): its
 // constructor.
 
+#include "base/settings.h"
 #include "game/guest_types.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_race_event, true, "SBX",
-                    "Our own C++ for the race event's constructor instead of the recompiled "
-                    "function");
+SBX_SETTING_BOOL(native_race_event, true, "Overrides", "Race",
+                 "Our own C++ for the race event's constructor instead of the recompiled "
+                 "function");
 
 namespace {
 
@@ -28,7 +27,7 @@ GUEST_SIZE(RaceEvent, 160);
 // RaceEvent::RaceEvent: r3 the event. Returns it.
 extern "C" REX_FUNC(sub_821418A8) {
   REX_FUNC_PROLOGUE();
-  if (!REXCVAR_GET(native_race_event)) {
+  if (!SBX_GET(native_race_event)) {
     __imp__sub_821418A8(ctx, base);
     return;
   }

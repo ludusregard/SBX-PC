@@ -11,13 +11,18 @@
 namespace renderer {
 
 // The camera a command list was recorded with, for our own passes that need
-// it (--gbuffer, --xegtao): in a race camera pass 0's, in the menus the
-// camera pass their 3D scene (the garage stage, the parking area) updated.
-// Its view, projection and view-projection: the game's row-vector
-// matrices, row by row. Not valid without either.
+// it (--xegtao): in a race camera pass 0's, in the menus the camera pass
+// their 3D scene (the garage stage, the parking area) updated. Its view,
+// projection and view-projection: the game's row-vector matrices, row by
+// row. Not valid without either.
 struct ListCamera {
   bool valid = false;
   bool in_race = false;
+  // The main camera's cut count when the list was recorded
+  // (subtick::CarTransforms_CameraCutSerial; 0 without
+  // --reset_effects_on_camera_cut): a change from the last list's is a camera
+  // cut, where our passes that keep earlier frames start again.
+  uint64_t cut_serial = 0;
   float view[16] = {};
   float projection[16] = {};
   float view_projection[16] = {};
@@ -36,6 +41,13 @@ struct ListCamera {
 // Then whether the list being replayed came from a logic pass
 // (--native_renderer_mirror_by_tick), and its camera.
 void Renderer_OnListHandedOver(bool logic_pass, const ListCamera& camera = {});
+
+// The font sheet drawn as a distance field (src/hooks/font.cpp, from a font
+// file's SBXF; docs/game_data.md, "Font"): the sheet's base address as its
+// texture's fetch constant holds it (0: none) and its spread, in sheet
+// pixels from the edge to 0 or 255. The font shaders' draws of that sheet
+// threshold the distance (glsl/boot/font_sdf.glsl). Any thread.
+void Renderer_SetDistanceFieldFont(uint32_t base_address, float spread);
 void Renderer_OnReplayStart();
 bool Renderer_ReplayingLogicList();
 ListCamera Renderer_ReplayingCamera();

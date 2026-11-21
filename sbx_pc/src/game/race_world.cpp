@@ -2,14 +2,13 @@
 // route position moved onto the main road, the race event's starts
 // placed, the paused tick's answer and a sorted list's clear.
 
+#include "base/settings.h"
 #include "game/guest_types.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_race_world, true, "SBX",
-                    "Our own C++ for the race world's small steps (the main road, the "
-                    "starts, the paused tick, a sorted list's clear) instead of the "
-                    "recompiled functions");
+SBX_SETTING_BOOL(native_race_world, true, "Overrides", "Race",
+                 "Our own C++ for the race world's small steps (the main road, the "
+                 "starts, the paused tick, a sorted list's clear) instead of the "
+                 "recompiled functions");
 
 namespace {
 
@@ -24,7 +23,7 @@ struct SortedList {
   guest::u32_be unknown_1604[2];
 };
 
-bool On() { return REXCVAR_GET(native_race_world); }
+bool On() { return SBX_GET(native_race_world); }
 
 }  // namespace
 

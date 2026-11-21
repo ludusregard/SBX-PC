@@ -18,25 +18,27 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include <fmt/format.h>
 #include <rex/graphics/xenos.h>
-#include "base/flags.h"
 #include "base/hash.h"
 #include "base/log.h"
+#include "base/settings.h"
 
 #include <emmintrin.h>
 #if defined(__SSSE3__)
 #include <tmmintrin.h>
 #endif
 
-ITC_FLAG_BOOL(native_renderer_log_texture_writes, false, "SBX",
-              "Log which code writes textures' memory: on first load and when a texture "
-              "is found changed, what the library's memcpy wrote there (a debugging aid; "
-              "with --native_renderer_verify_textures every change is found)");
+SBX_SETTING_BOOL(native_renderer_log_texture_writes, false, "Logging", "Native Renderer",
+                 "Log which code writes textures' memory: on first load and when a texture "
+                 "is found changed, what the library's memcpy wrote there (a debugging aid; "
+                 "with --native_renderer_verify_textures every change is found)");
 
-ITC_FLAG_DECLARE(bool, log_gpu_memory);
-ITC_FLAG_BOOL(native_renderer_cache_texture_bindings, true, "SBX",
-              "Answer texture views and samplers from a table of earlier answers by the "
-              "fetch constant's words, instead of looking the texture up every binding");
+SBX_SETTING_DECLARE(bool, log_gpu_memory);
+SBX_SETTING_BOOL(native_renderer_cache_texture_bindings, true, "Vulkan", "Caching",
+                 "Answer texture views and samplers from a table of earlier answers by the "
+                 "fetch constant's words, instead of looking the texture up every binding");
 
 namespace renderer {
 
@@ -1132,13 +1134,13 @@ void TextureCache::BeginFrame(uint32_t frame_index) {
   s.staging_used = 0;
   s.recording = false;
   vk::vkResetCommandPool(s.context.device, s.frames[frame_index].pool, 0);
-  cache_bindings_ = ITC_FLAG(native_renderer_cache_texture_bindings);
-  log_writes_ = ITC_FLAG(native_renderer_log_texture_writes);
+  cache_bindings_ = SBX_GET(native_renderer_cache_texture_bindings);
+  log_writes_ = SBX_GET(native_renderer_log_texture_writes);
   if (log_writes_) {
     s.LogWriteSummary();
   }
   s.DestroyRetired();
-  s.log_memory = ITC_FLAG(log_gpu_memory);
+  s.log_memory = SBX_GET(log_gpu_memory);
   if (s.log_memory) {
     s.now_s = uint32_t(std::chrono::duration_cast<std::chrono::seconds>(
                            std::chrono::steady_clock::now() - s.start_time)

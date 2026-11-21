@@ -3,13 +3,12 @@
 // the car sound's channels stopped, released, paused and resumed. The
 // sounds' updates stay recompiled.
 
+#include "base/settings.h"
 #include "game/guest_types.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_car_sounds, true, "SBX",
-                    "Our own C++ for the car sounds' set-up and their channels' stop, release, "
-                    "pause and resume instead of the recompiled functions");
+SBX_SETTING_BOOL(native_car_sounds, true, "Overrides", "Cars",
+                 "Our own C++ for the car sounds' set-up and their channels' stop, release, "
+                 "pause and resume instead of the recompiled functions");
 
 namespace {
 
@@ -73,7 +72,7 @@ GUEST_OFFSET(CarSound, channel_584, 584);
 GUEST_OFFSET(CarSound, channel_1136, 1136);
 GUEST_OFFSET(CarSound, playing, 1248);
 
-bool On() { return REXCVAR_GET(native_car_sounds); }
+bool On() { return SBX_GET(native_car_sounds); }
 
 void ConstructChannel(SoundChannel* channel) {
   channel->vtable = kChannelVtable;

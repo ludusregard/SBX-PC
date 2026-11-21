@@ -77,6 +77,21 @@ void CarTransforms_MenuSceneEnd();
 // if it was one of them, else the first), or 0 if none did.
 uint32_t CarTransforms_MenuSceneCamera();
 
+// The game switched the camera (subtick/camera_cuts.cpp): every camera
+// pass's next recorded pose isn't blended from the one before. `reason`
+// (a string literal) is logged with --log_camera_cuts.
+void CarTransforms_GameCameraCut(const char* reason);
+
+// The main camera's cuts (camera pass 0 in a race, the garage stage's in the
+// menus; the game's switches), for the effects that keep
+// earlier frames: a count, which changes on each cut (the native renderer
+// takes it with each command list's camera), and whether this tick had one
+// or the game reported a switch in it (from then on in the tick's logic
+// pass, and on its render-only passes). Only with --subtick, which does the
+// camera's cut tests.
+uint64_t CarTransforms_CameraCutSerial();
+bool CarTransforms_CameraCutThisTick();
+
 // For the CameraPass::Update wrapper: r3 = the camera pass.
 bool CarTransforms_CameraEnabled();
 void CarTransforms_CameraBegin(uint8_t* base, uint32_t address);

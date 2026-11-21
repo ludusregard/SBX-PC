@@ -7,7 +7,7 @@
 
 #include "renderer/vulkan/overlay.h"
 
-#include "base/flags.h"
+#include "base/settings.h"
 #include "base/log.h"
 #include "base/settings_file.h"
 #include "renderer/vulkan/generated_overlay_font.h"
@@ -75,32 +75,21 @@ constexpr ImVec4 kAccent{0.804f, 0.922f, 0.263f, 1.0f};
 constexpr ImVec4 kWarning{1.0f, 0.75f, 0.3f, 1.0f};
 constexpr ImVec4 kError{1.0f, 0.4f, 0.35f, 1.0f};
 
-// Saving (settings_file.h). Flags changed in this menu are written by Save;
-// the rest of the file is left alone, so a value from the command line or
-// the environment isn't saved unless it's changed here.
+// Saving (settings_file.h). Settings changed in this menu are written by
+// Save; the rest of the file is left alone, so a value from the command line
+// or the environment isn't saved unless it's changed here.
 std::set<std::string> g_changed;
-// Values for init-only flags, which can't change while the game runs: kept
-// here, saved, and used from the next start.
+// Values for ReXGlue's init-only cvars, which can't change while the game
+// runs: kept here, saved, and used from the next start.
 std::map<std::string, std::string> g_next_start;
 bool g_unsaved = false;
 std::string g_save_status;
 bool g_save_failed = false;
 
-// The settings' tabs, in order (the renderer's own tab comes after them).
+// The settings' tabs, in order (the renderer's own tab comes after them). A
+// setting naming a tab not listed here gets its own after these.
 constexpr std::array<const char*, 6> kTabs = {"Graphics", "Hooks",   "Overrides",
                                               "Logging",  "ReXGlue", "Vulkan"};
-
-// Our flags that are read once (at startup, or when first used): changing
-// them while the game runs does nothing until a restart. The SDK's flags
-// carry their own lifecycle.
-const std::set<std::string> kStartOnly = {
-    "width",           "height",          "fullscreen",       "msaa",
-    "gpu_plugin",      "cmaa2_threshold",
-    "native_renderer_validation",         "native_renderer_dump",
-    "play_movies_with_ffmpeg", "overlay_font",
-    "language",        "font_quality",    "motion_blur_quality", "bloom_quality",
-    "native_renderer_warm_pipelines",
-};
 
 // Short notices (Notify): shown at the top of the screen for a few seconds,
 // whether or not the panels are open. Set from any thread.
@@ -236,58 +225,227 @@ bool LoadFont(ImGuiIO& io, float size) {
   return false;
 }
 
-// Whether a flag only takes effect at the next start.
-bool AppliesOnRestart(const rex::cvar::FlagEntry& entry) {
-  return kStartOnly.count(entry.name) ||
-         entry.lifecycle == rex::cvar::Lifecycle::kRequiresRestart ||
-         entry.lifecycle == rex::cvar::Lifecycle::kInitOnly;
+// Where a setting shows: its tab and its group within it.
+struct Place {
+  std::string tab;
+  std::string group;
+};
+
+// One row of the menu: one of our settings (base/settings.h), placed by its
+// own group and subgroup, or one of ReXGlue's cvars, read through the SDK's
+// registry.
+struct Row {
+  sbx::SettingBase* ours = nullptr;
+  const rex::cvar::FlagEntry* sdk = nullptr;
+  Place place;
+};
+
+std::string_view RowName(const Row& row) {
+  return row.ours ? row.ours->name() : std::string_view(row.sdk->name);
 }
 
-// A value chosen in the menu. Init-only flags keep it for the next start
-// (g_next_start); the rest are set now.
-void Apply(const rex::cvar::FlagEntry& entry, const std::string& value) {
-  if (entry.lifecycle == rex::cvar::Lifecycle::kInitOnly) {
-    std::string current = entry.getter ? entry.getter() : std::string();
-    if (value == current) {
-      g_next_start.erase(entry.name);
-    } else {
-      g_next_start[entry.name] = value;
+std::string_view RowDescription(const Row& row) {
+  return row.ours ? row.ours->description() : std::string_view(row.sdk->description);
+}
+
+std::string RowDefault(const Row& row) {
+  return row.ours ? row.ours->DefaultText() : row.sdk->default_value;
+}
+
+std::string RowValue(const Row& row) {
+  if (row.ours) {
+    return row.ours->ValueText();
+  }
+  return row.sdk->getter ? row.sdk->getter() : std::string();
+}
+
+// ReXGlue's cvars our code reads, shown with ours, and the place each
+// showed before. The rest of the SDK's show in the ReXGlue tab by category,
+// but for the parts our renderer and audio replace (kUnused below).
+const std::map<std::string, Place, std::less<>>& SdkPlaces() {
+  static const std::map<std::string, Place, std::less<>> kPlaces = {
+      {"fullscreen", {"Graphics", "Window"}},
+      {"audio_maxqframes", {"Hooks", "Audio"}},
+      {"audio_mute", {"Hooks", "Audio"}},
+      {"half_pixel_offset", {"Vulkan", "Renderer"}},
+      {"dump_shaders", {"Logging", "Native Renderer"}},
+      {"log_bgm", {"Logging", "Game"}},
+  };
+  return kPlaces;
+}
+
+// ReXGlue's cvars that are read once at startup, beyond those whose own
+// lifecycle says so. (Ours carry sbx::kRestart in their definitions.)
+const std::set<std::string, std::less<>>& SdkStartOnly() {
+  static const std::set<std::string, std::less<>> kStartOnly = {
+      "fullscreen", "gpu_plugin", "overlay_font"};
+  return kStartOnly;
+}
+
+// Where one of ReXGlue's cvars shows, or an empty tab if it isn't shown.
+Place PlaceSdkFlag(const rex::cvar::FlagEntry& entry) {
+  if (auto it = SdkPlaces().find(entry.name); it != SdkPlaces().end()) {
+    return it->second;
+  }
+  // The SDK's window, presenter, GPU emulation and audio driver settings: our
+  // renderer and audio replace those parts, so these change nothing here and
+  // aren't shown. (Those of them our code does read are placed above.)
+  static const std::set<std::string> kUnused = {
+      "UI/Window", "Display",    "UI/Presenter", "UI/Vulkan", "UI/D3D12",
+      "GPU",       "GPU/Vulkan", "GPU/D3D12",    "GPU/Shader", "Audio",
+  };
+  if (kUnused.count(entry.category)) {
+    return {};
+  }
+  if (entry.category == "SBX") {
+    // One of ours still defined through the SDK (not yet moved to
+    // SBX_SETTING_*).
+    return {"Hooks", "Other"};
+  }
+  return {"ReXGlue", entry.category};
+}
+
+// Every row the menu shows: ours, then ReXGlue's. Commands (actions, not
+// settings) are left out, and so is any cvar of the SDK's named as one of
+// ours.
+std::vector<Row> AllRows() {
+  std::vector<Row> rows;
+  for (sbx::SettingBase* setting : sbx::settings::All()) {
+    Row& row = rows.emplace_back();
+    row.ours = setting;
+    row.place = {std::string(setting->group()), std::string(setting->subgroup())};
+    if (row.place.tab.empty()) {
+      row.place = {"Hooks", "Other"};
     }
-  } else if (!rex::cvar::SetFlagByName(entry.name, value)) {
-    ITC_LOG_WARN("settings: {} = {} wasn't accepted", entry.name, value);
+    if (row.place.group.empty()) {
+      row.place.group = "Other";
+    }
+  }
+  for (const rex::cvar::FlagEntry& entry : rex::cvar::GetRegistry()) {
+    if (entry.type == rex::cvar::FlagType::Command || sbx::settings::Find(entry.name)) {
+      continue;
+    }
+    Place place = PlaceSdkFlag(entry);
+    if (place.tab.empty()) {
+      continue;
+    }
+    Row& row = rows.emplace_back();
+    row.sdk = &entry;
+    row.place = std::move(place);
+  }
+  return rows;
+}
+
+// Whether a row's setting only takes effect at the next start.
+bool AppliesOnRestart(const Row& row) {
+  if (row.ours) {
+    return row.ours->restart();
+  }
+  return SdkStartOnly().count(row.sdk->name) ||
+         row.sdk->lifecycle == rex::cvar::Lifecycle::kRequiresRestart ||
+         row.sdk->lifecycle == rex::cvar::Lifecycle::kInitOnly;
+}
+
+bool InitOnly(const Row& row) {
+  return row.sdk && row.sdk->lifecycle == rex::cvar::Lifecycle::kInitOnly;
+}
+
+// Whether the value came from a launch option (which wins over the file).
+bool FromLaunchOption(const Row& row) {
+  if (row.ours) {
+    sbx::SettingSource source = row.ours->source();
+    return source == sbx::SettingSource::kCommandLine ||
+           source == sbx::SettingSource::kEnvironment;
+  }
+  using rex::cvar::Source;
+  return row.sdk->source == Source::kCommandLine || row.sdk->source == Source::kEnvironment;
+}
+
+// A value chosen in the menu. The SDK's init-only cvars keep it for the next
+// start (g_next_start); the rest are set now.
+void Apply(const Row& row, const std::string& value) {
+  std::string name(RowName(row));
+  if (row.ours) {
+    if (!row.ours->SetText(value, sbx::SettingSource::kRuntime)) {
+      ITC_LOG_WARN("settings: {} = {} wasn't accepted", name, value);
+      return;
+    }
+  } else if (InitOnly(row)) {
+    std::string current = row.sdk->getter ? row.sdk->getter() : std::string();
+    if (value == current) {
+      g_next_start.erase(name);
+    } else {
+      g_next_start[name] = value;
+    }
+  } else if (!rex::cvar::SetFlagByName(name, value)) {
+    ITC_LOG_WARN("settings: {} = {} wasn't accepted", name, value);
     return;
   }
-  g_changed.insert(entry.name);
+  g_changed.insert(name);
   g_unsaved = true;
 }
 
-// One flag's row: its name (with a marker if it only applies on restart),
-// the description as a tooltip, an editor by its type, and a right-click
-// menu to reset it.
-void FlagRow(const rex::cvar::FlagEntry& entry) {
-  bool restart = AppliesOnRestart(entry);
-  bool init_only = entry.lifecycle == rex::cvar::Lifecycle::kInitOnly;
-  auto next = g_next_start.find(entry.name);
+// The editor's kind for a row.
+enum class Editor { kBool, kInt, kNumber, kText };
+
+Editor EditorFor(const Row& row) {
+  if (row.ours) {
+    switch (row.ours->type()) {
+      case sbx::SettingType::kBool:
+        return Editor::kBool;
+      case sbx::SettingType::kInt:
+        return Editor::kInt;
+      case sbx::SettingType::kFloat:
+      case sbx::SettingType::kDouble:
+        return Editor::kNumber;
+      case sbx::SettingType::kString:
+        return Editor::kText;
+    }
+    return Editor::kText;
+  }
+  using rex::cvar::FlagType;
+  switch (row.sdk->type) {
+    case FlagType::Boolean:
+      return Editor::kBool;
+    case FlagType::Int32:
+    case FlagType::Int64:
+    case FlagType::Uint32:
+    case FlagType::Uint64:
+      return Editor::kInt;
+    case FlagType::Double:
+      return Editor::kNumber;
+    default:
+      return Editor::kText;
+  }
+}
+
+// One setting's row: its name (with a marker if it only applies on
+// restart), the description as a tooltip, an editor by its type, and a
+// right-click menu to reset it.
+void FlagRow(const Row& row) {
+  const std::string name(RowName(row));
+  bool restart = AppliesOnRestart(row);
+  bool init_only = InitOnly(row);
+  auto next = g_next_start.find(name);
   bool pending = next != g_next_start.end();
-  ImGui::PushID(entry.name.c_str());
+  ImGui::PushID(name.c_str());
   ImGui::TableNextRow();
   ImGui::TableNextColumn();
   if (restart) {
-    ImGui::TextColored(kWarning, "%s%s", entry.name.c_str(),
+    ImGui::TextColored(kWarning, "%s%s", name.c_str(),
                        pending    ? " (next start)"
                        : init_only ? " (startup only)"
                                    : " (restart)");
   } else {
-    ImGui::TextUnformatted(entry.name.c_str());
+    ImGui::TextUnformatted(name.c_str());
   }
   if (ImGui::IsItemHovered()) {
-    std::string tip = entry.description;
+    std::string tip(RowDescription(row));
     if (!tip.empty()) {
       tip += "\n";
     }
-    tip += "Default: " + entry.default_value;
-    using rex::cvar::Source;
-    if (entry.source == Source::kCommandLine || entry.source == Source::kEnvironment) {
+    tip += "Default: " + RowDefault(row);
+    if (FromLaunchOption(row)) {
       tip += "\nSet by a launch option, which wins over the settings file.";
     }
     if (init_only) {
@@ -298,63 +456,55 @@ void FlagRow(const rex::cvar::FlagEntry& entry) {
   }
   if (ImGui::BeginPopupContextItem("reset")) {
     if (ImGui::MenuItem("Reset to default")) {
-      Apply(entry, entry.default_value);
+      Apply(row, RowDefault(row));
     }
     ImGui::EndPopup();
   }
   ImGui::TableNextColumn();
   ImGui::SetNextItemWidth(-1.0f);
-  std::string value = pending ? next->second : entry.getter ? entry.getter() : std::string();
-  using rex::cvar::FlagType;
-  switch (entry.type) {
-    case FlagType::Boolean: {
+  std::string value = pending ? next->second : RowValue(row);
+  switch (EditorFor(row)) {
+    case Editor::kBool: {
       bool on = value == "true" || value == "1";
       if (ImGui::Checkbox("##v", &on)) {
-        Apply(entry, on ? "true" : "false");
+        Apply(row, on ? "true" : "false");
       }
       break;
     }
-    case FlagType::Int32:
-    case FlagType::Int64:
-    case FlagType::Uint32:
-    case FlagType::Uint64: {
+    case Editor::kInt: {
       int number = std::atoi(value.c_str());
       if (ImGui::InputInt("##v", &number, 1, 10, ImGuiInputTextFlags_EnterReturnsTrue)) {
-        if (entry.constraints.min) {
-          number = std::max(number, int(*entry.constraints.min));
+        if (row.sdk && row.sdk->constraints.min) {
+          number = std::max(number, int(*row.sdk->constraints.min));
         }
-        if (entry.constraints.max) {
-          number = std::min(number, int(*entry.constraints.max));
+        if (row.sdk && row.sdk->constraints.max) {
+          number = std::min(number, int(*row.sdk->constraints.max));
         }
-        Apply(entry, std::to_string(number));
+        Apply(row, std::to_string(number));
       }
       break;
     }
-    case FlagType::Double: {
+    case Editor::kNumber: {
       double number = std::atof(value.c_str());
       if (ImGui::InputDouble("##v", &number, 0.0, 0.0, "%.4f",
                              ImGuiInputTextFlags_EnterReturnsTrue)) {
-        Apply(entry, std::to_string(number));
+        Apply(row, std::to_string(number));
       }
       break;
     }
-    default: {
+    case Editor::kText: {
       // --language: the folders found in ADDON_DATA/LANGUAGES/, by their
-      // language.xml names; --font_quality: hd or sd.
-      if (entry.name == "language" || entry.name == "font_quality") {
+      // language.xml names.
+      if (row.ours && name == "language") {
         std::vector<std::pair<std::string, std::string>> options;  // value, label
-        if (entry.name == "language") {
-          options.push_back({"", "Automatic (EN if found, else JP)"});
-          bool has_jp = false;
-          for (const patch_loader::Language& language : patch_loader::Languages()) {
-            options.push_back({language.code, language.name + " (" + language.code + ")"});
-            has_jp |= language.code == "JP" || language.code == "jp";
-          }
-          if (!has_jp) {
-            options.push_back({"JP", "Japanese (JP, the disc's)"});
-          }
-        } else {
-          options = {{"hd", "HD"}, {"sd", "SD"}};
+        options.push_back({"", "Automatic (EN if found, else JP)"});
+        bool has_jp = false;
+        for (const patch_loader::Language& language : patch_loader::Languages()) {
+          options.push_back({language.code, language.name + " (" + language.code + ")"});
+          has_jp |= language.code == "JP" || language.code == "jp";
+        }
+        if (!has_jp) {
+          options.push_back({"JP", "Japanese (JP, the disc's)"});
         }
         std::string shown = value;
         for (const auto& [option, label] : options) {
@@ -365,30 +515,30 @@ void FlagRow(const rex::cvar::FlagEntry& entry) {
         if (ImGui::BeginCombo("##v", shown.c_str())) {
           for (const auto& [option, label] : options) {
             if (ImGui::Selectable(label.c_str(), option == value)) {
-              Apply(entry, option);
+              Apply(row, option);
             }
           }
           ImGui::EndCombo();
         }
         break;
       }
-      if (!entry.constraints.allowed_values.empty()) {
+      if (row.sdk && !row.sdk->constraints.allowed_values.empty()) {
         if (ImGui::BeginCombo("##v", value.c_str())) {
-          for (const std::string& option : entry.constraints.allowed_values) {
+          for (const std::string& option : row.sdk->constraints.allowed_values) {
             if (ImGui::Selectable(option.c_str(), option == value)) {
-              Apply(entry, option);
+              Apply(row, option);
             }
           }
           ImGui::EndCombo();
         }
         break;
       }
-      // Strings, including our float settings (cmaa2_threshold and the
-      // like): applied on Enter.
+      // Strings, including our float settings kept as text (cmaa2_threshold
+      // and the like): applied on Enter.
       char buffer[256];
       std::snprintf(buffer, sizeof(buffer), "%s", value.c_str());
       if (ImGui::InputText("##v", buffer, sizeof(buffer), ImGuiInputTextFlags_EnterReturnsTrue)) {
-        Apply(entry, buffer);
+        Apply(row, buffer);
       }
       break;
     }
@@ -396,8 +546,8 @@ void FlagRow(const rex::cvar::FlagEntry& entry) {
   ImGui::PopID();
 }
 
-// A table of flags: a setting and its value per row.
-void FlagTable(const std::vector<const rex::cvar::FlagEntry*>& flags) {
+// A table of settings: a setting and its value per row.
+void FlagTable(const std::vector<const Row*>& rows) {
   if (!ImGui::BeginTable("flags", 2,
                          ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |
                              ImGuiTableFlags_SizingStretchProp)) {
@@ -405,192 +555,30 @@ void FlagTable(const std::vector<const rex::cvar::FlagEntry*>& flags) {
   }
   ImGui::TableSetupColumn("Setting", ImGuiTableColumnFlags_WidthStretch, 0.55f);
   ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch, 0.45f);
-  for (const rex::cvar::FlagEntry* entry : flags) {
-    FlagRow(*entry);
+  for (const Row* row : rows) {
+    FlagRow(*row);
   }
   ImGui::EndTable();
 }
 
-// Where a flag shows: its tab and its group within it.
-struct Place {
-  std::string tab;
-  std::string group;
-};
+// A tab's rows by group; each group's rows are sorted by name.
+using Groups = std::map<std::string, std::vector<const Row*>>;
 
-// The Overrides tab's group for a native code flag (--native_<subsystem>,
-// docs/native-code.md), by the subsystem's first word: a new flag named as
-// the others are lands in its group with nothing added here.
-const char* OverrideGroup(std::string_view subsystem) {
-  static const std::pair<const char*, std::array<std::string_view, 12>> kGroups[] = {
-      {"Race", {"race", "replay", "track", "racer", "ai", "minimap", "mode", "nearest"}},
-      {"Cars", {"car", "vehicle", "collision", "accessories", "tuning", "power", "stand", "front"}},
-      {"Scene",
-       {"scene", "second", "course", "material", "shader", "texture", "model", "models",
-        "scenery", "camera", "cameras", "post"}},
-      {"Menus and UI",
-       {"menu", "screen", "ui", "strings", "game", "location", "alt", "type67", "build",
-        "career", "boot", "movies"}},
-      {"Data and Saves", {"data", "file", "load", "save", "saves", "archive", "user"}},
-      {"Audio", {"sound", "audio", "xact", "xaudio"}},
-      {"Runtime",
-       {"c", "std", "framework", "heap", "memory", "helpers", "input", "action", "app",
-        "frame", "matrix", "display"}},
-  };
-  const std::string_view first = subsystem.substr(0, subsystem.find('_'));
-  for (const auto& [group, words] : kGroups) {
-    if (std::find(words.begin(), words.end(), first) != words.end()) {
-      return group;
-    }
-  }
-  return "Other";
-}
-
-// Our flags all share one SDK category ("SBX"), so they're placed by name
-// here. The SDK's categories ("GPU/Vulkan" and the like) are placed by theirs.
-// A new flag of ours shows under Hooks/Other until it's named here.
-Place PlaceFlag(const rex::cvar::FlagEntry& entry) {
-  static const std::map<std::string, Place> kNamed = {
-      {"msaa", {"Graphics", "Anti-Aliasing"}},
-      {"cmaa2", {"Graphics", "Anti-Aliasing"}},
-      {"cmaa2_threshold", {"Graphics", "Anti-Aliasing"}},
-      {"fxaa", {"Graphics", "Anti-Aliasing"}},
-      {"aa_debug", {"Graphics", "Anti-Aliasing"}},
-      {"aa_resolve", {"Graphics", "Anti-Aliasing"}},
-      {"motion_blur", {"Graphics", "Post-Process"}},
-      {"bloom", {"Graphics", "Post-Process"}},
-      {"motion_blur_quality", {"Graphics", "Post-Process"}},
-      {"bloom_quality", {"Graphics", "Post-Process"}},
-      {"xbox_gamma", {"Graphics", "Post-Process"}},
-      {"subtick", {"Graphics", "Frame Rate"}},
-      {"subtick_input", {"Graphics", "Frame Rate"}},
-      {"subtick_input_sensitivity", {"Graphics", "Frame Rate"}},
-      {"max_fps", {"Graphics", "Frame Rate"}},
-      {"width", {"Graphics", "Window"}},
-      {"height", {"Graphics", "Window"}},
-      {"fullscreen", {"Graphics", "Window"}},
-      {"camera_fov", {"Graphics", "Camera"}},
-      {"blur_frame_blend", {"Graphics", "Experimental"}},
-      {"blur_frame_blend_center", {"Graphics", "Experimental"}},
-      {"blur_frame_blend_edge", {"Graphics", "Experimental"}},
-      {"blur_frame_blend_shutter", {"Graphics", "Experimental"}},
-      {"per_tick_post_race_check", {"Hooks", "Fixes: Race"}},
-      {"post_race_check_cycles", {"Hooks", "Fixes: Race"}},
-      {"per_tick_car_draw_flag", {"Hooks", "Fixes: Interpolation"}},
-      {"per_tick_cockpit_dials", {"Hooks", "Fixes: Interpolation"}},
-      {"redraw_rival_logo", {"Hooks", "Fixes: Interpolation"}},
-      {"skip_cutscenes", {"Hooks", "Title"}},
-      {"attract_after_s", {"Hooks", "Title"}},
-      {"unlock_cut_cars", {"Hooks", "Cars"}},
-      {"cut_car_wheels", {"Hooks", "Cars"}},
-      {"cut_car_steelies", {"Hooks", "Cars"}},
-      {"audio_maxqframes", {"Hooks", "Audio"}},
-      {"audio_mute", {"Hooks", "Audio"}},
-      {"custom_music", {"Hooks", "Audio"}},
-      {"new_music_roll", {"Hooks", "Audio"}},
-      {"custom_music_shuffle", {"Hooks", "Audio"}},
-      {"custom_music_log", {"Hooks", "Audio"}},
-      {"custom_music_adaptive_volume", {"Hooks", "Audio"}},
-      {"play_movies_with_ffmpeg", {"Hooks", "Movies"}},
-      {"patch_loader", {"Hooks", "Patches"}},
-      {"language", {"Hooks", "Language"}},
-      {"font_quality", {"Hooks", "Language"}},
-      {"autosave", {"Hooks", "Saves"}},
-      {"log_autosave", {"Logging", "Game"}},
-      {"half_pixel_offset", {"Vulkan", "Renderer"}},
-      {"dump_shaders", {"Logging", "Native Renderer"}},
-      {"gbuffer", {"Graphics", "G-Buffer"}},
-      {"gbuffer_resolve", {"Graphics", "G-Buffer"}},
-      {"gbuffer_debug", {"Graphics", "G-Buffer"}},
-      {"gbuffer_debug_depth_range", {"Graphics", "G-Buffer"}},
-      {"gbuffer_debug_velocity_scale", {"Graphics", "G-Buffer"}},
-      {"xegtao", {"Graphics", "Ambient Occlusion"}},
-      {"xegtao_quality", {"Graphics", "Ambient Occlusion"}},
-      {"xegtao_denoise", {"Graphics", "Ambient Occlusion"}},
-      {"xegtao_radius", {"Graphics", "Ambient Occlusion"}},
-      {"xegtao_strength", {"Graphics", "Ambient Occlusion"}},
-      {"xegtao_debug", {"Graphics", "Ambient Occlusion"}},
-      {"xegtao_temporal", {"Graphics", "Ambient Occlusion"}},
-      {"xegtao_mirror", {"Graphics", "Ambient Occlusion"}},
-      {"log_boot_modes", {"Logging", "Game"}},
-      {"log_file_opens", {"Logging", "Game"}},
-      {"log_bgm", {"Logging", "Game"}},
-      {"log_message_handlers", {"Logging", "Game"}},
-      {"log_race_overlays", {"Logging", "Game"}},
-      {"log_render_only_draws", {"Logging", "Native Renderer"}},
-      {"log_gpu_memory", {"Logging", "Native Renderer"}},
-      {"log_record_matrix", {"Logging", "Debugging"}},
-      {"find_per_frame_state", {"Logging", "Debugging"}},
-      {"find_per_frame_state_interval_ms", {"Logging", "Debugging"}},
-      {"watch_addresses", {"Logging", "Debugging"}},
-      {"find_any_steps", {"Logging", "Debugging"}},
-      {"find_countdowns", {"Logging", "Debugging"}},
-      {"log_cockpit_draw", {"Logging", "Debugging"}},
-      {"render_frame_dump", {"Logging", "Native Renderer"}},
-  };
-  if (auto it = kNamed.find(entry.name); it != kNamed.end()) {
-    return it->second;
-  }
-  const std::string& name = entry.name;
-  if (name == "native_renderer_disk_cache" || name == "native_renderer_skip_repeated_state" ||
-      name == "native_renderer_warm_pipelines" ||
-      name.starts_with("native_renderer_cache_") || name.starts_with("native_renderer_reuse_")) {
-    return {"Vulkan", "Caching"};
-  }
-  if (name == "native_renderer_validation" || name.starts_with("native_renderer_check_") ||
-      name.starts_with("native_renderer_verify_")) {
-    return {"Vulkan", "Validation"};
-  }
-  if (name.starts_with("native_renderer_log_")) {
-    return {"Logging", "Native Renderer"};
-  }
-  if (name.starts_with("native_renderer_")) {
-    return {"Vulkan", "Debugging"};
-  }
-  if (name.starts_with("native_")) {
-    return {"Overrides", OverrideGroup(std::string_view(name).substr(7))};
-  }
-  // The SDK's window, presenter, GPU emulation and audio driver settings: our
-  // renderer and audio replace those parts, so these change nothing here and
-  // aren't shown. (Those of them our code does read are named above.)
-  static const std::set<std::string> kUnused = {
-      "UI/Window", "Display",    "UI/Presenter", "UI/Vulkan", "UI/D3D12",
-      "GPU",       "GPU/Vulkan", "GPU/D3D12",    "GPU/Shader", "Audio",
-  };
-  if (kUnused.count(entry.category)) {
-    return {};
-  }
-  if (entry.category == "SBX") {
-    return {"Hooks", "Other"};
-  }
-  return {"ReXGlue", entry.category};
-}
-
-// A tab's flags by group; each group's flags are sorted by name. Commands
-// (actions, not settings) are left out.
-using Groups = std::map<std::string, std::vector<const rex::cvar::FlagEntry*>>;
-
-std::map<std::string, Groups> Layout() {
+std::map<std::string, Groups> Layout(const std::vector<Row>& rows) {
   std::map<std::string, Groups> tabs;
-  for (const rex::cvar::FlagEntry& entry : rex::cvar::GetRegistry()) {
-    if (entry.type == rex::cvar::FlagType::Command) {
-      continue;
-    }
-    Place place = PlaceFlag(entry);
-    if (place.tab.empty()) {
-      continue;
-    }
-    tabs[place.tab][place.group].push_back(&entry);
+  for (const Row& row : rows) {
+    tabs[row.place.tab][row.place.group].push_back(&row);
   }
   // By name, but for these, in this order at the top of their group.
-  static const std::map<std::string, int> kFirst = {{"width", 0}, {"height", 1}};
-  auto rank = [](const rex::cvar::FlagEntry* e) {
-    auto it = kFirst.find(e->name);
+  static const std::map<std::string, int, std::less<>> kFirst = {{"width", 0}, {"height", 1}};
+  auto rank = [](const Row* row) {
+    auto it = kFirst.find(RowName(*row));
     return it != kFirst.end() ? it->second : int(kFirst.size());
   };
   for (auto& [tab, groups] : tabs) {
-    for (auto& [group, flags] : groups) {
-      std::sort(flags.begin(), flags.end(), [&](const auto* a, const auto* b) {
-        return std::pair(rank(a), a->name) < std::pair(rank(b), b->name);
+    for (auto& [group, group_rows] : groups) {
+      std::sort(group_rows.begin(), group_rows.end(), [&](const Row* a, const Row* b) {
+        return std::pair(rank(a), RowName(*a)) < std::pair(rank(b), RowName(*b));
       });
     }
   }
@@ -600,10 +588,10 @@ std::map<std::string, Groups> Layout() {
 // A tab's groups, each a collapsible header over its table.
 void GroupedFlags(const std::string& tab, const Groups& groups) {
   ImGui::PushID(tab.c_str());
-  for (const auto& [group, flags] : groups) {
+  for (const auto& [group, rows] : groups) {
     ImGui::PushID(group.c_str());
     if (ImGui::CollapsingHeader(group.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
-      FlagTable(flags);
+      FlagTable(rows);
     }
     ImGui::PopID();
   }
@@ -611,45 +599,38 @@ void GroupedFlags(const std::string& tab, const Groups& groups) {
 }
 
 // Every setting whose name or description has the search text, across tabs.
-void SearchResults(const std::string& search) {
-  std::vector<const rex::cvar::FlagEntry*> found;
-  for (const rex::cvar::FlagEntry& entry : rex::cvar::GetRegistry()) {
-    if (entry.type == rex::cvar::FlagType::Command) {
-      continue;
-    }
-    if (PlaceFlag(entry).tab.empty()) {
-      continue;
-    }
-    if (Lower(entry.name).find(search) != std::string::npos ||
-        Lower(entry.description).find(search) != std::string::npos) {
-      found.push_back(&entry);
+void SearchResults(const std::vector<Row>& rows, const std::string& search) {
+  std::vector<const Row*> found;
+  for (const Row& row : rows) {
+    if (Lower(std::string(RowName(row))).find(search) != std::string::npos ||
+        Lower(std::string(RowDescription(row))).find(search) != std::string::npos) {
+      found.push_back(&row);
     }
   }
   std::sort(found.begin(), found.end(),
-            [](const auto* a, const auto* b) { return a->name < b->name; });
+            [](const Row* a, const Row* b) { return RowName(*a) < RowName(*b); });
   ImGui::Text("%zu settings match", found.size());
   FlagTable(found);
 }
 
-// Writes the flags changed in this menu to the settings file.
+// Writes the settings changed in this menu to the settings file.
 void SaveSettings() {
   std::vector<settings_file::Entry> entries;
   bool restart = false;
-  for (const rex::cvar::FlagEntry& entry : rex::cvar::GetRegistry()) {
-    if (entry.type == rex::cvar::FlagType::Command || !g_changed.count(entry.name)) {
+  for (const Row& row : AllRows()) {
+    std::string name(RowName(row));
+    if (!g_changed.count(name)) {
       continue;
     }
-    auto next = g_next_start.find(entry.name);
-    std::string value = next != g_next_start.end() ? next->second
-                        : entry.getter              ? entry.getter()
-                                                    : std::string();
-    Place place = PlaceFlag(entry);
+    auto next = g_next_start.find(name);
+    std::string value = next != g_next_start.end() ? next->second : RowValue(row);
     settings_file::Entry& saved = entries.emplace_back();
-    saved.name = entry.name;
-    saved.value = settings_file::TOMLValue(entry.type, value);
-    saved.is_default = value == entry.default_value;
-    saved.section = place.tab + " / " + place.group;
-    restart |= AppliesOnRestart(entry);
+    saved.name = name;
+    saved.value = row.ours ? settings_file::TOMLValue(row.ours->type(), value)
+                           : settings_file::TOMLValue(row.sdk->type, value);
+    saved.is_default = value == RowDefault(row);
+    saved.section = row.place.tab + " / " + row.place.group;
+    restart |= AppliesOnRestart(row);
   }
   std::string file = settings_file::Path().filename().string();
   std::string error;
@@ -782,13 +763,23 @@ void Panels(const FrameInfo& frame) {
     ImGui::TextDisabled("Changes apply at once, except those marked; Enter applies a text field.");
     SaveBar();
     std::string search = Lower(g_search);
+    std::vector<Row> rows = AllRows();
     if (!search.empty()) {
-      SearchResults(search);
+      SearchResults(rows, search);
     } else if (ImGui::BeginTabBar("tabs")) {
-      std::map<std::string, Groups> layout = Layout();
+      std::map<std::string, Groups> layout = Layout(rows);
       for (const char* tab : kTabs) {
         if (ImGui::BeginTabItem(tab)) {
           GroupedFlags(tab, layout[tab]);
+          ImGui::EndTabItem();
+        }
+      }
+      for (const auto& [tab, groups] : layout) {
+        if (std::find_if(kTabs.begin(), kTabs.end(), [&](const char* listed) {
+              return tab == listed;
+            }) == kTabs.end() &&
+            ImGui::BeginTabItem(tab.c_str())) {
+          GroupedFlags(tab, groups);
           ImGui::EndTabItem();
         }
       }

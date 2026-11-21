@@ -2,13 +2,13 @@
 // --xegtao (passes.cpp, ApplyXeGTAO): the denoised AO term blended into a
 // history kept over frames, so the noise, which moves each frame (XeGTAO's
 // NoiseIndex cycles over 64 frames), averages out. Each pixel finds where it
-// was last frame through the G-buffer's camera motion vectors. The history
+// was last frame through the camera motion vectors (BuildDepthMotion). The history
 // is dropped where its view distance doesn't match (something else was
 // there: a disocclusion, or a car, whose own motion the vectors don't
 // have), and clamped to this frame's 3x3 neighborhood against ghosting.
 //   binding 0: the AO term (r32ui: the visibility times 255)
-//   binding 1: the G-buffer's velocity (UV now minus UV last frame)
-//   binding 2: the G-buffer's depth (.g: the view distance)
+//   binding 1: the camera motion (BuildDepthMotion's velocity) (UV now minus UV last frame)
+//   binding 2: the view's depth (BuildDepthMotion) (.g: the view distance)
 //   binding 3: last frame's history (rg32f: visibility, view distance),
 //     filtered here (linear filtering of 32-bit floats is optional in Vulkan)
 //   binding 4: this frame's history, written

@@ -6,11 +6,11 @@
 
 #include "game/race_setup.h"
 
-#include <rex/cvar.h>
+#include "base/settings.h"
 
-REXCVAR_DEFINE_BOOL(native_race_setup, true, "SBX",
-                    "Our own C++ for the race setup' set-ups, resets, small setters and getters "
-                    "instead of the recompiled functions");
+SBX_SETTING_BOOL(native_race_setup, true, "Overrides", "Race",
+                 "Our own C++ for the race setup' set-ups, resets, small setters and getters "
+                 "instead of the recompiled functions");
 
 namespace {
 
@@ -27,7 +27,7 @@ using game::Stages;
 using guest::At;
 using guest::Guest;
 
-bool On() { return REXCVAR_GET(native_race_setup); }
+bool On() { return SBX_GET(native_race_setup); }
 
 // Writable: the race data, made at start up.
 constexpr uint32_t kRaceData = 0x826B580C;

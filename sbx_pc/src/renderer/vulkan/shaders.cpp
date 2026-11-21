@@ -14,9 +14,9 @@
 #include <unordered_map>
 #include <rex/graphics/pipeline/shader/spirv.h>
 #include <rex/graphics/pipeline/shader/spirv_translator.h>
-#include "base/flags.h"
 #include "base/hash.h"
 #include "base/log.h"
+#include "base/settings.h"
 #include <rex/string/buffer.h>
 
 // The translator reads this GPU setting, which the emulated GPU's plugin
@@ -27,21 +27,21 @@ std::string& FLAGS_dump_shaders_storage_() {
   return dump_shaders;
 }
 
-ITC_FLAG_STRING(native_renderer_log_shader_ucode, "", "SBX",
-                "Log the microcode disassembly of this shader (hash in hex) when first "
-                "used (a debugging aid)");
-ITC_FLAG_BOOL(native_shaders, false, "SBX",
-              "Draw with the game's shaders ported to GLSL (src/renderer/vulkan/glsl/game) instead of "
-              "translating their microcode, where a port exists (docs/shaders.md)");
-ITC_FLAG_INT32(motion_blur_quality, 1, "SBX",
-               "Motion blur samples, as a multiple of the game's 3 (1-8; with --native_shaders, "
-               "applies on restart)");
-ITC_FLAG_INT32(bloom_quality, 1, "SBX",
-               "Bloom blur samples per texel, as a multiple of the game's 1 (1-8; with "
-               "--native_shaders, applies on restart)");
-ITC_FLAG_STRING(native_shaders_off, "", "SBX",
-                "Shaders (microcode hashes in hex, comma-separated) to keep translating with "
-                "--native_shaders: to find which port a difference comes from");
+SBX_SETTING_STRING(native_renderer_log_shader_ucode, "", "Logging", "Native Renderer",
+                   "Log the microcode disassembly of this shader (hash in hex) when first "
+                   "used (a debugging aid)");
+SBX_SETTING_BOOL(native_shaders, true, "Overrides", "Other",
+                 "Draw with the game's shaders ported to GLSL (src/renderer/vulkan/glsl/game) instead of "
+                 "translating their microcode, where a port exists (docs/shaders.md)");
+SBX_SETTING_INT(motion_blur_quality, 1, "Graphics", "Post-Process",
+                "Motion blur samples, as a multiple of the game's 3 (1-8; with --native_shaders, "
+                "applies on restart)", sbx::kRestart);
+SBX_SETTING_INT(bloom_quality, 1, "Graphics", "Post-Process",
+                "Bloom blur samples per texel, as a multiple of the game's 1 (1-8; with "
+                "--native_shaders, applies on restart)", sbx::kRestart);
+SBX_SETTING_STRING(native_shaders_off, "", "Overrides", "Other",
+                   "Shaders (microcode hashes in hex, comma-separated) to keep translating with "
+                   "--native_shaders: to find which port a difference comes from");
 
 namespace renderer {
 
@@ -57,6 +57,7 @@ static_assert(offsetof(TranslatorSystemConstants, vertex_index_endian) == 8);
 static_assert(offsetof(TranslatorSystemConstants, line_loop_closing_index) == 12);
 static_assert(offsetof(TranslatorSystemConstants, vertex_base_index) == 16);
 static_assert(offsetof(TranslatorSystemConstants, ndc_scale) == 124);
+static_assert(offsetof(TranslatorSystemConstants, point_vertex_diameter_min) == 136);
 static_assert(offsetof(TranslatorSystemConstants, ndc_offset) == 140);
 static_assert(offsetof(TranslatorSystemConstants, texture_swizzled_signs) == 176);
 static_assert(offsetof(TranslatorSystemConstants, alpha_test_reference) == 272);
@@ -74,7 +75,7 @@ namespace {
 bool PortTurnedOff(uint64_t hash) {
   static const std::vector<uint64_t> off = [] {
     std::vector<uint64_t> hashes;
-    std::stringstream list(ITC_FLAG(native_shaders_off));
+    std::stringstream list(SBX_GET(native_shaders_off));
     std::string item;
     while (std::getline(list, item, ',')) {
       if (!item.empty()) {
@@ -489,7 +490,7 @@ TranslatedShader* ShaderCache::Get(ShaderStage stage, const uint8_t* ucode, uint
   if (auto it = state_->translations.find(key); it != state_->translations.end()) {
     return it->second->spirv.empty() ? nullptr : it->second.get();
   }
-  if (const std::string& logged = ITC_FLAG(native_renderer_log_shader_ucode);
+  if (const std::string& logged = SBX_GET(native_renderer_log_shader_ucode);
       !logged.empty() && std::strtoull(logged.c_str(), nullptr, 16) == hash &&
       !state_->ucode_logged) {
     state_->ucode_logged = true;
@@ -501,7 +502,7 @@ TranslatedShader* ShaderCache::Get(ShaderStage stage, const uint8_t* ucode, uint
   // vertex shaders read guest memory as one buffer (as the translator does
   // when the device allows one buffer of 512 MB), and no port makes point
   // sprites' coordinates.
-  if (ITC_FLAG(native_shaders) && !interface.param_gen_point &&
+  if (SBX_GET(native_shaders) && !interface.param_gen_point &&
       (stage == ShaderStage::kPixel ||
        graphics::SpirvShaderTranslator::GetSharedMemoryStorageBufferCountLog2(
            state_->features.max_storage_buffer_range) == 0)) {
@@ -514,8 +515,8 @@ TranslatedShader* ShaderCache::Get(ShaderStage stage, const uint8_t* ucode, uint
       // Read once: a shader made from its port is kept for the session.
       static const PostQuality post_quality = [] {
         PostQuality q;
-        q.motion_blur = uint32_t(std::clamp(int(ITC_FLAG(motion_blur_quality)), 1, 8));
-        q.bloom = uint32_t(std::clamp(int(ITC_FLAG(bloom_quality)), 1, 8));
+        q.motion_blur = uint32_t(std::clamp(int(SBX_GET(motion_blur_quality)), 1, 8));
+        q.bloom = uint32_t(std::clamp(int(SBX_GET(bloom_quality)), 1, 8));
         return q;
       }();
       if (MakeFromPort(*port, ucode, size_bytes, interface.interpolator_mask,

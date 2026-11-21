@@ -23,27 +23,27 @@
 
 #include "hooks/title_screen.h"
 
+#include "base/settings.h"
 #include "hooks/autosave.h"
 #include "hooks/native_calls.h"
 
 #include "guest.h"
 
-#include <rex/cvar.h>
 #include <rex/logging.h>
 
 #include <atomic>
 #include <format>
 #include <string>
 
-REXCVAR_DEFINE_BOOL(log_boot_modes, false, "SBX",
-                    "Log the front end's state objects as they change, and the boot movie's "
-                    "wait");
-REXCVAR_DEFINE_BOOL(skip_cutscenes, false, "SBX",
-                    "Skip the boot movie, and run the logos and the title screen's intro "
-                    "without the 30 Hz wait (until the title screen waits for start)");
-REXCVAR_DEFINE_INT32(attract_after_s, 0, "SBX",
-                     "Testing: seconds the title screen waits before the attract race "
-                     "(0 = the game's 20)");
+SBX_SETTING_BOOL(log_boot_modes, false, "Logging", "Game",
+                 "Log the front end's state objects as they change, and the boot movie's "
+                 "wait");
+SBX_SETTING_BOOL(skip_cutscenes, false, "Hooks", "Title",
+                 "Skip the boot movie, and run the logos and the title screen's intro "
+                 "without the 30 Hz wait (until the title screen waits for start)");
+SBX_SETTING_INT(attract_after_s, 0, "Hooks", "Title",
+                "Testing: seconds the title screen waits before the attract race "
+                "(0 = the game's 20)");
 
 namespace {
 
@@ -70,7 +70,7 @@ std::atomic<bool> g_movie_started{false};
 namespace hooks {
 
 bool TitleScreen_SkipTickWait() {
-  return REXCVAR_GET(skip_cutscenes) && !g_title_idle.load(std::memory_order_relaxed) &&
+  return SBX_GET(skip_cutscenes) && !g_title_idle.load(std::memory_order_relaxed) &&
          !g_first_race_started.load(std::memory_order_relaxed);
 }
 
@@ -90,7 +90,7 @@ void TitleScreen_MovieRendered() {
 // so the next tick starts the attract race.
 extern "C" REX_FUNC(sub_8221FC48) {
   REX_FUNC_PROLOGUE();
-  int32_t after = REXCVAR_GET(attract_after_s) * kTicksPerSecond;
+  int32_t after = SBX_GET(attract_after_s) * kTicksPerSecond;
   uint32_t title = guest::LoadU32(base, kTitleScreenPointer);
   int32_t before = title ? int32_t(guest::LoadU32(base, title + kIdleTicksOffset)) : 0;
   __imp__sub_8221FC48(ctx, base);
@@ -103,12 +103,12 @@ extern "C" REX_FUNC(sub_8221FC48) {
   // the fast boot runs the title screen until just short of its attract
   // wait (the intro is shorter than that), then puts the count back to 0:
   // the menu is ready and the attract race is still the game's 20 s away.
-  if (REXCVAR_GET(skip_cutscenes) && !g_title_idle.load(std::memory_order_relaxed) &&
+  if (SBX_GET(skip_cutscenes) && !g_title_idle.load(std::memory_order_relaxed) &&
       now > before && now >= kFastForwardTicks) {
     guest::StoreU32(base, title + kIdleTicksOffset, 0);
     now = 0;
     g_title_idle.store(true, std::memory_order_relaxed);
-    if (REXCVAR_GET(log_boot_modes)) {
+    if (SBX_GET(log_boot_modes)) {
       REXLOG_INFO("boot modes: title screen ran {} ticks, --skip_cutscenes's fast boot ends",
                   kFastForwardTicks);
     }
@@ -125,7 +125,7 @@ extern "C" REX_FUNC(sub_8221FC48) {
 // --log_boot_modes: logs the front end's state objects as they change.
 extern "C" REX_FUNC(sub_82098DF0) {
   REX_FUNC_PROLOGUE();
-  if (REXCVAR_GET(log_boot_modes)) {
+  if (SBX_GET(log_boot_modes)) {
     static std::string last;
     std::string now;
     for (uint32_t pointer : kFrontEndPointers) {
@@ -152,7 +152,7 @@ extern "C" REX_FUNC(sub_82098DF0) {
 // the garage menus through it (src/hooks/autosave.cpp).
 extern "C" REX_FUNC(sub_82106410) {
   REX_FUNC_PROLOGUE();
-  const bool log = REXCVAR_GET(log_boot_modes);
+  const bool log = SBX_GET(log_boot_modes);
   const bool autosave = hooks::Autosave_Watching();
   if (!log && !autosave) {
     hooks::NativeGameModes_Handle(ctx, base);
@@ -179,11 +179,11 @@ extern "C" REX_FUNC(sub_82106410) {
 // movie reports finished as soon as the render thread has started it.
 extern "C" REX_FUNC(sub_82107D80) {
   REX_FUNC_PROLOGUE();
-  if (REXCVAR_GET(log_boot_modes)) {
+  if (SBX_GET(log_boot_modes)) {
     REXLOG_INFO("boot modes: movie wait, this {:08X} +9608 {}", ctx.r3.u32,
                 guest::LoadU32(base, ctx.r3.u32 + 9608));
   }
-  g_in_movie_wait = REXCVAR_GET(skip_cutscenes);
+  g_in_movie_wait = SBX_GET(skip_cutscenes);
   __imp__sub_82107D80(ctx, base);
   g_in_movie_wait = false;
 }

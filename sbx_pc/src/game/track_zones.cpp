@@ -8,14 +8,13 @@
 // once a race, building the zones with the functions here.
 
 #include "game/track_zones.h"
+#include "base/settings.h"
 #include "game/vehicle.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_track_zones, true, "SBX",
-                    "Our own C++ for the track zones (the HUD's route zones checked against "
-                    "the player's car each tick, their route ranges and lists) instead of the "
-                    "recompiled functions; their once-a-race set-up stays recompiled");
+SBX_SETTING_BOOL(native_track_zones, true, "Overrides", "Race",
+                 "Our own C++ for the track zones (the HUD's route zones checked against "
+                 "the player's car each tick, their route ranges and lists) instead of the "
+                 "recompiled functions; their once-a-race set-up stays recompiled");
 
 namespace {
 
@@ -41,7 +40,7 @@ constexpr uint32_t kRacerActive = 0x40;
 // The zones' vtables: one class each, 12 bytes apart.
 constexpr uint32_t kZoneVtables = 0x820117C0;
 
-bool On() { return REXCVAR_GET(native_track_zones); }
+bool On() { return SBX_GET(native_track_zones); }
 
 RouteSection* Section(int32_t number) {
   game::Route* route = At<game::Route>(*At<u32_be>(game::kRoute));

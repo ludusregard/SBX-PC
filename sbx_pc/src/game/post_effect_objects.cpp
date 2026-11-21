@@ -4,13 +4,12 @@
 // set-ups and draws stay recompiled (src/hooks/post_effects.cpp is SBX's
 // own --bloom hook on them).
 
+#include "base/settings.h"
 #include "game/math.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_post_effects, true, "SBX",
-                    "Our own C++ for the post effects' glare definition and their destructors "
-                    "instead of the recompiled functions");
+SBX_SETTING_BOOL(native_post_effects, true, "Overrides", "Scene",
+                 "Our own C++ for the post effects' glare definition and their destructors "
+                 "instead of the recompiled functions");
 
 namespace {
 
@@ -59,7 +58,7 @@ struct GlareDef {
 GUEST_OFFSET(GlareDef, unknown_148, 148);
 GUEST_OFFSET(GlareDef, points, 160);
 
-bool On() { return REXCVAR_GET(native_post_effects); }
+bool On() { return SBX_GET(native_post_effects); }
 
 void ReleaseTexture(Guest& g, u32_be& texture) { g.Call(sub_82131EB0, &texture); }
 void ReleaseTarget(Guest& g, u32_be& target) { g.Call(sub_82132738, &target); }

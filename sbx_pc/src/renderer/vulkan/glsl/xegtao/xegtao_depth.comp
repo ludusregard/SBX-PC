@@ -6,16 +6,16 @@
 // depth-writing draw of the hand-written shaders writes one, except the
 // glass, and the smooth-alpha solids write theirs dithered by their alpha),
 // that distance, packed back through XeGTAO's own unpacking; else the
-// G-buffer's depth. So the glass isn't in the AO's depth, and a smooth-alpha
+// view's depth. So the glass isn't in the AO's depth, and a smooth-alpha
 // edge is in it as often as its alpha (the history averages it). Sample 0
-// of a multisampled target (MULTISAMPLE), as the G-buffer takes its depth.
-// Without NORMALS, the G-buffer's depth as is.
-//   binding 0: the G-buffer's depth (rg32f: .r the depth as drawn)
+// of a multisampled target (MULTISAMPLE), as BuildDepthMotion takes its depth.
+// Without NORMALS, the view's depth (BuildDepthMotion) as is.
+//   binding 0: the view's depth (BuildDepthMotion) (rg32f: .r the depth as drawn)
 //   binding 1: the normals target (r32g32ui), with NORMALS
 //   binding 2: the result (r32f)
 //   binding 3: where no AO is applied (r8: 1 where the distance's sign bit
 //     is set, the mirrors and the sky, which write no distance, so the
-//     G-buffer's depth stays; xe_normal_distance in xe_interface.glsl)
+//     view's depth stays; xe_normal_distance in xe_interface.glsl)
 
 layout(local_size_x = 8, local_size_y = 8) in;
 

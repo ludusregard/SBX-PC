@@ -7,17 +7,16 @@
 // The getters below are shared by the linker across classes (one function
 // for every class with a word at that offset), so they're named by offset.
 
+#include "base/settings.h"
 #include "game/guest_types.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_framework, true, "SBX",
-                    "Our own C++ for the app framework's getters, its interfaces' thunks and "
-                    "DebugText::SetPosition instead of the recompiled functions");
+SBX_SETTING_BOOL(native_framework, true, "Overrides", "Runtime",
+                 "Our own C++ for the app framework's getters, its interfaces' thunks and "
+                 "DebugText::SetPosition instead of the recompiled functions");
 
 #define SBX_FRAMEWORK_FALLBACK(name)       \
   REX_FUNC_PROLOGUE();                     \
-  if (!REXCVAR_GET(native_framework)) {    \
+  if (!SBX_GET(native_framework)) {    \
     __imp__##name(ctx, base);              \
     return;                                \
   }                                        \

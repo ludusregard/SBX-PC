@@ -7,13 +7,12 @@
 // shapes), the finds' searches, the models' draws and the morph's blend
 // stay recompiled.
 
+#include "base/settings.h"
 #include "game/model.h"
 #include "game/scene_points.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_second_set, true, "SBX",
-                    "Our own C++ for the scene parts' point tables (their defaults and constructors), the models' streams and the morph's run instead of the recompiled functions; the models' draws stay recompiled");
+SBX_SETTING_BOOL(native_second_set, true, "Overrides", "Scene",
+                 "Our own C++ for the scene parts' point tables (their defaults and constructors), the models' streams and the morph's run instead of the recompiled functions; the models' draws stay recompiled");
 
 namespace {
 
@@ -45,7 +44,7 @@ using guest::At;
 using guest::Guest;
 using guest::u32_be;
 
-bool On() { return REXCVAR_GET(native_second_set); }
+bool On() { return SBX_GET(native_second_set); }
 
 // Writable: copied into each scene object when it's reset.
 constexpr uint32_t kResetValue = 0x826B2B24;

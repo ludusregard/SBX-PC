@@ -6,17 +6,16 @@
 // (sub_822932D0) and memcpy (sub_8258CB90, wrapped by the native renderer)
 // stay recompiled, called from here; memset to 0 is done here.
 
+#include "base/settings.h"
 #include "game/model.h"
 #include "game/shader_objects.h"
 
-#include <rex/cvar.h>
-
 #include <cstring>
 
-REXCVAR_DEFINE_BOOL(native_shader_objects, true, "SBX",
-                    "Our own C++ for the shader objects (a shader file's record, the vertex "
-                    "and pixel shaders' set-up and creates, the mesh and pair loaders) instead "
-                    "of the recompiled functions; the allocations and copies stay recompiled");
+SBX_SETTING_BOOL(native_shader_objects, true, "Overrides", "Scene",
+                 "Our own C++ for the shader objects (a shader file's record, the vertex "
+                 "and pixel shaders' set-up and creates, the mesh and pair loaders) instead "
+                 "of the recompiled functions; the allocations and copies stay recompiled");
 
 namespace {
 
@@ -38,7 +37,7 @@ using guest::Element;
 using guest::Guest;
 using guest::u32_be;
 
-bool On() { return REXCVAR_GET(native_shader_objects); }
+bool On() { return SBX_GET(native_shader_objects); }
 
 constexpr uint32_t kCreated = 0x00100000;  // flags' bit once Create made it
 constexpr uint32_t kGuard = 0x0BADF00D;    // the word after a made microcode

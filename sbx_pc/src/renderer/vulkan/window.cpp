@@ -3,11 +3,12 @@
 #include "renderer/app_window.h"
 #include "renderer/vulkan/overlay.h"
 
-#include "base/flags.h"
 #include "base/log.h"
+#include "base/settings.h"
 
 #include <SDL3/SDL_vulkan.h>
 #include <fmt/format.h>
+#include <rex/cvar.h>
 
 #include <algorithm>
 #include <atomic>
@@ -15,21 +16,21 @@
 #include <memory>
 #include <string>
 
-ITC_FLAG_INT32(width, 0, "SBX",
-               "Window width in pixels (in fullscreen, the drawing width); 0: 1280, or "
-               "from height at 16:9");
-ITC_FLAG_INT32(height, 0, "SBX",
-               "Window height in pixels (in fullscreen, the drawing height); 0: 720, or "
-               "from width at 16:9");
+SBX_SETTING_INT(width, 0, "Graphics", "Window",
+                "Window width in pixels (in fullscreen, the drawing width); 0: 1280, or "
+                "from height at 16:9", sbx::kRestart);
+SBX_SETTING_INT(height, 0, "Graphics", "Window",
+                "Window height in pixels (in fullscreen, the drawing height); 0: 720, or "
+                "from width at 16:9", sbx::kRestart);
 // The SDK's (it also makes the SDK's own window, hidden in exclusive mode,
 // fullscreen); ours follows it.
-ITC_FLAG_DECLARE(bool, fullscreen);
+REXCVAR_DECLARE(bool, fullscreen);
 
 namespace renderer {
 
 // The window's size from --width and --height (one alone keeps 16:9).
 VkExtent2D WindowSize() {
-  int32_t width = ITC_FLAG(width), height = ITC_FLAG(height);
+  int32_t width = SBX_GET(width), height = SBX_GET(height);
   if (width <= 0 && height <= 0) {
     return {kDefaultWidth, kDefaultHeight};
   }
@@ -47,8 +48,8 @@ VkExtent2D WindowSize() {
 // otherwise the largest that fits the window's pixels (`pixels`, the
 // swapchain's size).
 float ResolutionScale(VkExtent2D pixels) {
-  bool sized = ITC_FLAG(width) > 0 || ITC_FLAG(height) > 0;
-  VkExtent2D size = (ITC_FLAG(fullscreen) && sized) || !pixels.width || !pixels.height
+  bool sized = SBX_GET(width) > 0 || SBX_GET(height) > 0;
+  VkExtent2D size = (REXCVAR_GET(fullscreen) && sized) || !pixels.width || !pixels.height
                         ? WindowSize()
                         : pixels;
   return std::min(float(size.width) / kDefaultWidth, float(size.height) / kDefaultHeight);
@@ -104,7 +105,7 @@ void SDLCALL CreateWindowOnMainThread(void* data) {
   // screen at 145%).
   SDL_WindowFlags flags = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE |
                           SDL_WINDOW_HIGH_PIXEL_DENSITY |
-                          (ITC_FLAG(fullscreen) ? SDL_WINDOW_FULLSCREEN : 0);
+                          (REXCVAR_GET(fullscreen) ? SDL_WINDOW_FULLSCREEN : 0);
   setup->window =
       SDL_CreateWindow("ITC native renderer", int(size.width), int(size.height), flags);
   if (!setup->window) {
@@ -118,7 +119,7 @@ void SDLCALL CreateWindowOnMainThread(void* data) {
   // The window's size is given in pixels: in the desktop's (scaled) units,
   // it's that over the pixel density.
   if (float density = SDL_GetWindowPixelDensity(setup->window);
-      density > 0.0f && density != 1.0f && !ITC_FLAG(fullscreen)) {
+      density > 0.0f && density != 1.0f && !REXCVAR_GET(fullscreen)) {
     SDL_SetWindowSize(setup->window, int(std::lround(size.width / density)),
                       int(std::lround(size.height / density)));
     SDL_SyncWindow(setup->window);

@@ -1,6 +1,6 @@
 #version 450
-// G-buffer lite (--gbuffer; passes.cpp, BuildGBuffer): from the main view's
-// depth, at its opaque resolve, our own buffers that last past the frame:
+// XeGTAO's depth and camera motion (passes.cpp, BuildDepthMotion): from a 3D
+// view's depth, where XeGTAO runs, our own buffers that last past the frame:
 //   0: depth (R32G32F): the depth as drawn (0..1), and the view distance (the
 //      point's clip w, in the game's units).
 //   1: velocity (R16G16F): where the point is now minus where it was last

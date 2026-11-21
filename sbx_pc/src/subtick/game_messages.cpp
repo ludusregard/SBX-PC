@@ -1,5 +1,6 @@
 #include "subtick/game_messages.h"
 
+#include "base/settings.h"
 #include "debug/frame_state_diff.h"
 #include "guest.h"
 #include "hooks/autosave.h"
@@ -12,7 +13,6 @@
 #endif
 
 #include <fmt/format.h>
-#include <rex/cvar.h>
 #include <rex/logging.h>
 
 #include <algorithm>
@@ -25,12 +25,12 @@
 #include <utility>
 #include <vector>
 
-REXCVAR_DECLARE(bool, subtick);
-REXCVAR_DECLARE(bool, redraw_rival_logo);
-REXCVAR_DEFINE_BOOL(log_message_handlers, false, "SBX",
-                    "Diagnostic: log the Update and Draw message handlers a logic pass "
-                    "delivers to whenever they change (entering a screen: finds its draw step, "
-                    "as Race::DrawStep is the race's)");
+SBX_SETTING_DECLARE(bool, subtick);
+SBX_SETTING_DECLARE(bool, redraw_rival_logo);
+SBX_SETTING_BOOL(log_message_handlers, false, "Logging", "Game",
+                 "Diagnostic: log the Update and Draw message handlers a logic pass "
+                 "delivers to whenever they change (entering a screen: finds its draw step, "
+                 "as Race::DrawStep is the race's)");
 
 namespace subtick {
 
@@ -149,7 +149,7 @@ void Deliver(PPCContext& ctx, uint8_t* base, uint32_t dispatcher, uint32_t messa
     if (only_target != 0 && target != only_target) {
       continue;
     }
-    if (REXCVAR_GET(log_message_handlers) && !g_render_only_pass) {
+    if (SBX_GET(log_message_handlers) && !g_render_only_pass) {
       g_pass_handlers.emplace_back(guest::LoadU32(base, message), target);
     }
     ctx.r3.u64 = object;
@@ -212,7 +212,7 @@ void DispatchMenuRenderOnly(PPCContext& ctx, uint8_t* base, uint32_t dispatcher)
     const uint32_t count = guest::LoadU32(base, dispatcher + kQueueCountOffset);
     PerFrameLogic_RedrawMenuUiMovies(ctx, base);
     const int32_t posted = int32_t(guest::LoadU32(base, dispatcher + kQueueCountOffset) - count);
-    if (posted != 0 && REXCVAR_GET(log_message_handlers)) {
+    if (posted != 0 && SBX_GET(log_message_handlers)) {
       REXLOG_INFO("message handlers (pass {}): the menus' redraw changed the queue by {} "
                   "message(s); put back",
                   g_passes, posted);
@@ -264,7 +264,7 @@ void NoteMenuWaits(uint8_t* base) {
       waiting_state = state;
     }
   }
-  if (waiting != g_menu_waiting && REXCVAR_GET(log_message_handlers)) {
+  if (waiting != g_menu_waiting && SBX_GET(log_message_handlers)) {
     if (waiting) {
       REXLOG_INFO("message handlers (pass {}): handler {:08X} waits in state {} for message 3; "
                   "the menus run at 30 Hz until it comes",
@@ -299,7 +299,7 @@ void DispatchMessages(PPCContext& ctx, uint8_t* base, uint32_t dispatcher) {
     if (guest::LoadU32(base, message) == kUpdate && g_render_only_pass && main_thread) {
       // Render-only: the game doesn't advance. The rival intro cutscene's
       // handler still runs, to redraw its logo (per_frame_logic.cpp).
-      if (REXCVAR_GET(redraw_rival_logo)) {
+      if (SBX_GET(redraw_rival_logo)) {
         Deliver(ctx, base, dispatcher, message, kRivalCutsceneHandler);
       }
       continue;
@@ -317,7 +317,7 @@ void GameMessages_OnPassFinished(uint8_t* base) {
   if (g_render_only_pass) {
     return;
   }
-  if (REXCVAR_GET(log_message_handlers)) {
+  if (SBX_GET(log_message_handlers)) {
     LogHandlersIfChanged();
   }
   // The pass that just ran was a logic pass: it decides whether we're in a
@@ -395,7 +395,7 @@ void GameMessages_PassFromAnyThread(uint64_t& number, bool& render_only, bool& m
 // handlers need to be known or Update skipped; otherwise the original runs.
 extern "C" REX_FUNC(sub_82106478) {
   REX_FUNC_PROLOGUE();
-  if (!REXCVAR_GET(subtick) && !REXCVAR_GET(log_message_handlers)) {
+  if (!SBX_GET(subtick) && !SBX_GET(log_message_handlers)) {
     __imp__sub_82106478(ctx, base);
     return;
   }
@@ -408,7 +408,7 @@ extern "C" REX_FUNC(sub_82106478) {
 extern "C" REX_FUNC(sub_82098E68) {
   REX_FUNC_PROLOGUE();
   subtick::g_scene_mode = ctx.r3.u32 ? guest::LoadU32(base, ctx.r3.u32 + 64) : 0;
-  if (REXCVAR_GET(log_message_handlers)) {
+  if (SBX_GET(log_message_handlers)) {
     static uint32_t last_mode = 0, last_draw = 0;
     uint32_t scene = ctx.r3.u32;
     uint32_t mode = scene ? guest::LoadU32(base, scene + 64) : 0;

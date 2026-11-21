@@ -7,13 +7,12 @@
 // of the recompiled function.
 
 #include "game/race_hud.h"
+#include "base/settings.h"
 #include "hooks/native_calls.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_race_hud, true, "SBX",
-                    "Our own C++ for RaceHud::RunMovie (which UI movie the race HUD runs) "
-                    "instead of the recompiled function; the movies stay recompiled");
+SBX_SETTING_BOOL(native_race_hud, true, "Overrides", "Race",
+                 "Our own C++ for RaceHud::RunMovie (which UI movie the race HUD runs) "
+                 "instead of the recompiled function; the movies stay recompiled");
 
 namespace {
 
@@ -56,7 +55,7 @@ constexpr uint32_t kMovieTable = 0x826B59AC;
 // advance, else draw only). Returns what the movie's call returns.
 extern "C" REX_FUNC(sub_82211F50) {
   REX_FUNC_PROLOGUE();
-  if (!REXCVAR_GET(native_race_hud)) {
+  if (!SBX_GET(native_race_hud)) {
     __imp__sub_82211F50(ctx, base);
     return;
   }
@@ -90,7 +89,7 @@ extern "C" REX_FUNC(sub_82211F50) {
 // RivalLogo::Draw: r3 the logo. Runs a shown logo's movie; when the movie
 // is over it's finished and the logo marked so.
 void hooks::NativeRaceHud_RivalLogoDraw(PPCContext& ctx, uint8_t* base) {
-  if (!REXCVAR_GET(native_race_hud)) {
+  if (!SBX_GET(native_race_hud)) {
     __imp__sub_8220F7B0(ctx, base);
     return;
   }

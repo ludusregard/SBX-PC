@@ -2,13 +2,12 @@
 // small matrix and vector helpers (copies, identity, the points' w, an
 // object's inverse, a swap). The math kernels themselves stay recompiled.
 
+#include "base/settings.h"
 #include "game/math.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_matrix_math, true, "SBX",
-                    "Our own C++ for the matrix math's small helpers instead of the "
-                    "recompiled functions");
+SBX_SETTING_BOOL(native_matrix_math, true, "Overrides", "Runtime",
+                 "Our own C++ for the matrix math's small helpers instead of the "
+                 "recompiled functions");
 
 namespace {
 
@@ -32,7 +31,7 @@ struct InvertibleObject {
 };
 GUEST_OFFSET(InvertibleObject, inverse, 560);
 
-bool On() { return REXCVAR_GET(native_matrix_math); }
+bool On() { return SBX_GET(native_matrix_math); }
 
 }  // namespace
 

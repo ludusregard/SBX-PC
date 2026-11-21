@@ -2,13 +2,12 @@
 // default): the route's data prepared and freed, and the track's collision
 // unloaded.
 
+#include "base/settings.h"
 #include "game/guest_types.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_track_collision, true, "SBX",
-                    "Our own C++ for the track route's prepare and free and the track "
-                    "collision's unload instead of the recompiled functions");
+SBX_SETTING_BOOL(native_track_collision, true, "Overrides", "Race",
+                 "Our own C++ for the track route's prepare and free and the track "
+                 "collision's unload instead of the recompiled functions");
 
 namespace {
 
@@ -28,7 +27,7 @@ constexpr uint32_t kTrackRoute = 0x826B57F0;
 constexpr uint32_t kTrackRoute2 = 0x826B57FC;   // A second object, freed with it.
 constexpr uint32_t kTrackBlock = 0x826B5808;    // Holds a block freed on unload.
 
-bool On() { return REXCVAR_GET(native_track_collision); }
+bool On() { return SBX_GET(native_track_collision); }
 
 }  // namespace
 

@@ -63,8 +63,8 @@ with no row); run it after changing either.
 | `sub_82159540` | `Race::DrawStep` | Wrapped | The race's draw step (Draw message). Writes a field at +64 of the object its calls return. Noted to tell races from menus (`src/subtick/game_messages.cpp`). |
 | `sub_820A3B98` | `CameraPass::Update` | Wrapped | Scales the main camera's projection after the update (`--camera_fov`, `CarTransforms_CameraFov`), then rebuilds the view-projection. Rebuilds a camera pass's view (+0x10) from its eye, target and up vector (+0x190, +0x1A0, +0x1B0), and its view-projection (+0x90 = view * projection at +0x50). Called several times per Draw for pass 0. On pass 0 in a race, built from the camera blended between ticks; also run on pass 0 before `Race::DrawStep` on render-only passes, so the cars are drawn with the frame's view-projection (`src/subtick/car_transforms.cpp`, see "Subtick"). |
 | `sub_8209BE70` | `Matrix::Multiply` |  | out (r3) = a (r4) * b (r5), 4x4. |
-| `sub_8257ACD0` | `Recorder::RecordObject` | Wrapped | The bulk per-object recorder, ~150 calls per pass in a race: records command 7 with vertex constants 0-8: world (r5) * camera view-projection (r4) in c0-c3, the world matrix in c4-c7 (for some objects a projective matrix instead), and the camera's world position in c8. The camera is often a stack copy, not a camera pass. |
-| `sub_8257AAE0` |  |  | Multiplies a world matrix and camera into a stack temporary; not recorded (likely a visibility test). |
+| `sub_8257ACD0` | `Recorder::RecordObject` | Overridden | r4 the view-projection, r5 the world matrix: a chunk of its own: command 7 (vertex c0-c8, 0x00010009), c0-c3 world x view-projection (Matrix::Multiply), c4-c7 the world (Matrix::Copy), c8 the scene's eye (0x8264EA40), 36. Returns the command's first slot. The subtick wrapper (`src/subtick/car_transforms.cpp`, --log_record_matrix) calls `hooks::NativeSceneryLists_RecordObject` (our C++ with --native_scenery_lists, else the original).|replaces `sub_8257ACD0` |
+| `sub_8257AAE0` | `Model::IsShapeVisible` | Overridden | r4 the view-projection, r5 the world matrix, r6 the shape: world x view-projection (Matrix::Multiply into its 192-byte frame at +96, the w's 1 first); the shape's 8 bounding box corners (mesh +96) by the columns (the vector unit's dot products, denormals flushed), / w, flipped when w < 0; 0 when all eight are past x or y +-1.01, or all behind (w < 0) or all z < 0.|replaces `sub_8257AAE0` |
 | `sub_825758A0` | `Command::SetShaderConstants` | Wrapped | Render thread, command 7: r3 = payload, r4 = register count, r5 = stage << 24 \| type << 16 \| start << 8 \| count. |
 | `sub_82572638` | `CommandList::AllocateSlots` |  | r3 = list, r4 = slot count; returns the first 16-byte slot. |
 | `sub_820BFF88` | `Vehicle::GetDistancePerFrame` |  | Speed (m/s) times a hard-coded 1/30 s. |
@@ -96,13 +96,13 @@ with no row); run it after changing either.
 | `sub_820F1038` | `TextureAnimations::Advance` | Overridden | From the draw step part `sub_820F5F48`: advances the flipbook animation set at r3+1060 (`sub_821453B0`). Skipped on render-only passes (`src/subtick/per_frame_logic.cpp`); otherwise our C++ for it with `--native_course_scenery` (`src/hooks/course_scenery.cpp`). |
 | `sub_821453B0` |  | Overridden | Calls `sub_82145350` on every animation in a set: count at +0, then offsets to each animation. |
 | `sub_82145350` |  | Overridden | Advances one flipbook animation: frame count +0, current frame +4, tick counter +8 (wraps at the length at +12), frame start ticks from +16. |
-| `sub_82145410` |  |  | Returns the current frame's entry of animation r4 in set r3 (texture id at +4). |
-| `sub_821452C8` |  |  | Finds the animation in set r3 whose texture is r4; -1 if none. |
+| `sub_82145410` | `AnimationSet::CurrentFrame` | Overridden | r4 the animation: its current frame's 8-byte entry (after the animation's table), or 0 past its frames.|replaces `sub_82145410` |
+| `sub_821452C8` | `AnimationSet::FindByTexture` | Overridden | Finds the animation in set r3 whose texture (after its key frames and one word) is r4; -1 if none. An animation without keys never matches. |
 | `sub_82146F00` |  |  | Draws the light groups: for each group, builds a light list on the stack (count +32, 48-byte lights at +36, from static level data) and picks its texture's current animation frame. Calls `sub_8209CED0` → `sub_8209CD58`. |
 | `sub_820F5610` | `Minimap::Draw` | Wrapped | From the draw step part `sub_820F5F48`; steps the minimap blink clock at `0x826B5784`/`0x826B5788` after drawing. Both put back on render-only passes (`src/subtick/per_frame_logic.cpp`). |
-| `sub_8257A460` | `ModelAnimations::Apply` | Wrapped | From `Scenery::Draw`, every pass: r3 a scene model; two animation lists at +304 (16-byte entries, time +12) and +364 (32-byte entries, time +16), each applied at its time (`sub_825873B8`, `sub_82586710`), then stepped one frame (`sub_82587498`, `sub_825867D8`: +1.0, wrapping at the clip's end, clips 80 bytes at the list's +8, start +72, end +76). The course's moving textures. On render-only passes applied at the logic pass's time plus the frame's progress and put back (`src/subtick/per_frame_logic.cpp`). |
+| `sub_8257A460` | `ModelAnimations::Apply` | Wrapped | From `Scenery::Draw`, every pass: r3 a scene model; two animation lists at +304 (16-byte entries, time +12) and +364 (32-byte entries, time +16), each applied at its time (`sub_825873B8`, `sub_82586710`), then stepped one frame (`sub_82587498`, `sub_825867D8`: +1.0, wrapping at the clip's end, clips 80 bytes at the list's +8, start +72, end +76). The course's moving textures. On render-only passes applied at the logic pass's time plus the frame's progress and put back (`src/subtick/per_frame_logic.cpp`). The step itself is our C++ with `--native_model_animation` (`hooks::NativeModelAnimation_Animate`, `src/game/model_animation.cpp`), called from the wrapper in place of the recompiled function. |
 | `sub_82107A38` |  | Wrapped | From Draw, every pass; adds one to the play time frame counter at `0x826B5870` and runs `ActionMappers::Update` (call at `0x82107B48`). The one is taken back on render-only passes, and every other pass with `--tick_rate_60` (`src/subtick/per_frame_logic.cpp`). |
-| `sub_82110928` |  |  | Turns the play time frame counter into hours, minutes and seconds (30, 1800, 108000 frames). |
+| `sub_82110928` | `PlayTime::Add` | Overridden | The frames played since the stats' mark (+6040) split into hours, minutes, seconds and frames (30, 1800, 108000 frames) and added to the stats' play time (+6032 to +6038) with the carries; the total into r3. |
 | `sub_82107CB8` | `Boot::StartMovie` |  | Message handler: plays the next boot movie, id from the table at `0x826B588C` (index at `0x826B58A8`), via `sub_820A45D0` (name table at `0x8233AF8C`). |
 | `sub_82107D80` | `Boot::WaitForMovie` | Wrapped | Message handler, every tick while a boot movie plays; ends the step on a button press if skippable (`0x826B58A4`) or when the movie has finished. |
 | `sub_82107D20` | `Boot::EndMovie` |  | Message handler: stops the movie; the front end (Genki logo, title) follows. |
@@ -112,40 +112,44 @@ with no row); run it after changing either.
 | `sub_820F3FF8` | `Lights::FindNearest` | Overridden | Collects the lights nearest a point, nearest first. Arguments: r3 the light set owner (list at r3+216: count +0, array +8 of 272-byte entries, each's +12 → +80 a light set), r4 the output, r5 the point, r6 the most lights to keep (at most 32; 0 returned above), r9 a direction vector, f1 a merge radius, f2 the farthest squared distance, f3 the least dot product. For each light (48 bytes: position xyz at +0, 32 bytes copied out): skipped beyond f2, or when the direction to it dotted with r9 is below f3 (a cone); within f1 of a light already kept, it replaces that one if nearer, else is dropped; otherwise insertion-sorted by squared distance into a 33-entry array on its ~2 KB guest stack frame. Writes 32 bytes a light to r4 (position with w = the float at `0x82000A20`, then the light's +16..+31) and returns the count. A light set's count (+0) is little-endian (byte-swapped after `lwz`); `sub_82292170` gives each of its entries, whose +0 count says how many times the entry's one light group (count +60, lights from +76) is scanned: the group pointer isn't advanced, so a count above 1 scans the same lights again (the merge then drops the copies). Only caller: `sub_820C8F10`. |
 | `sub_820C8F10` |  |  | Asks `sub_820F3FF8` for up to 10 lights near a point (r1+112) in a cone (cosine-like value from `sub_8258E218` of a setting at `[r27+11844]+5500` times a constant) of the course scenery manager at `[0x826B51FC]` (its visible areas' light sets). Called from `0x820E19B8`, `0x820E66F0` and `0x820DC028`. |
 | `sub_82292170` | `DataFile::GetEntry` | Overridden | Reads a container (`docs/game_data.md`): r3 the container, r4 an index; returns r3 plus the r4-th of the little-endian offsets at r3+4 (the count at +0 bounds r4; 0 beyond it); with r5's low byte set, 0 for an entry whose first word is 0. Light sets are containers; `sub_820F3FF8` passes r5 = 0. |
-| `sub_8209E348` | `Archive::Init` | Wrapped | At boot: allocates the two TOC buffers, sized from the entry counts built into the XEX (`0x825F0A90`, `0x825F0AA0`), reads `DATA\BUILD\TXR\BUILD.TOC` and `BUILD_CRS.TOC` into them, and opens `game:\DATA\BUILD\TXR\BUILD.DAT` and `BUILD_CRS.DAT` (`docs/game_data.md`). Called from `sub_821066D0`, which passes the size of the shared load buffer it allocates (0xC80000). Reads both TOCs before it returns; the patch loader then changes the TOC entries of the ids it replaces (`src/hooks/patch_loader.cpp`, `--patch_loader`). |
-| `sub_8209D4D0` | `Archive::Shutdown` |  | Frees the TOC and read buffers and closes the two `.DAT` handles. Called from `sub_82106800`. |
-| `sub_8209D988` | `Archive::GetToc` |  | r3 a file id: returns the `BUILD` TOC buffer for ids below 23009, else the `BUILD_CRS` one. |
-| `sub_8209DF80` | `Archive::Load` |  | r3 a file id, r4 the destination, r5-r8 options: reads the id's TOC entry (start sector, stored and decompressed size), checks `Archive::FindLooseFile`, and queues a read for the loader thread (`sub_8209DD38`). Ids at or above 23009 are in `BUILD_CRS`. r8 is a read size that overrides the TOC's stored size; every caller passes 0. A decompressed size of 0 means the entry is stored as is (no unpacking). |
-| `sub_8209D9F8` | `Archive::FindLooseFile` | Wrapped | r3 a file id (the game's, 0-24367): returns the loose file's path from the table at `0x825F0AB0`, or 0. Paths are relative (`DATA\TXR\MOVIE\OPENING.WMV`); the loose read (`sub_8209E0E0`) opens them under `game:\`. Only caller: `Archive::Load`. Returns a PATCH_DATA override's path first (`src/hooks/patch_loader.cpp`). |
+| `sub_8209E348` | `Archive::Init` | Overridden | At boot: allocates the two TOC buffers, reads `DATA\BUILD\TXR\BUILD.TOC` and `BUILD_CRS.TOC` into them, opens `game:\DATA\BUILD\TXR\BUILD.DAT` and `BUILD_CRS.DAT`, allocates the shared load buffer (r4, 0xC80000 from `sub_821066D0`) and the 10 MB staging ring, takes the three semaphores and starts the loader thread (the runner r3's second virtual, with the functor at `0x825F0B30`). The game sizes the TOC buffers from the entry counts built into the XEX (`0x825F0A90`, `0x825F0AA0`); ours (`hooks::NativeArchive_Init`, `src/game/archive.cpp`, `--native_archive`) sizes them from the `.TOC` files and reads them on the host (the same for the game's own files; the game's Init runs if they can't be read). The patch loader's wrapper (`src/hooks/patch_loader.cpp`) calls it, then changes the TOC entries of the ids it replaces. The functor's +20 gets a word of Init's frame the game never writes; ours keeps the frame and copies the same word. With the native Init the shared load buffer is `--archive_shared_buffer_kb` KiB (never less than r4; the game's size if the larger allocation fails). |
+| `sub_8209D4D0` | `Archive::Shutdown` | Overridden | Frees the shared load buffer, the staging ring and the TOC buffers, and closes the two `.DAT` handles (a failed close: the read error). Called from `sub_82106800`. |
+| `sub_8209D988` | `Archive::GetToc` | Overridden | r3 a file id: returns the `BUILD` TOC buffer for ids below 23009, else the `BUILD_CRS` one. |
+| `sub_8209DF80` | `Archive::Load` | Overridden | r3 a file id, r4 the destination, r5-r8 options: reads the id's TOC entry (start sector, stored and decompressed size), checks `Archive::FindLooseFile`, and queues a read for the loader thread (`sub_8209DD38`). Ids at or above 23009 are in `BUILD_CRS`. r8 is a read size that overrides the TOC's stored size; every caller passes 0. A decompressed size of 0 means the entry is stored as is (no unpacking). |
+| `sub_8209D9F8` | `Archive::FindLooseFile` | Overridden | r3 a file id (the game's, 0-24367): returns the loose file's path from the table at `0x825F0AB0`, or 0. Paths are relative (`DATA\TXR\MOVIE\OPENING.WMV`); the loose read (`sub_8209E0E0`) opens them under `game:\`. Only caller: `Archive::Load`. Returns a PATCH_DATA override's path first (`src/hooks/patch_loader.cpp`); else, with `--native_archive`, our walk of the table (`game::FindLooseFile`, `src/game/archive.cpp`). |
 | `sub_8258C000` | `operator new` |  | r3 a size; returns the block (retries through the new handler when out of memory). |
-| `sub_8209DD38` |  |  | Queues a 40-byte read request for the loader thread. |
-| `sub_8209E250` |  |  | Loader thread loop (no direct callers): takes requests off the queue, reads them from a `.DAT` (`sub_8209DE20`) or a loose file (`sub_8209E0E0`), then unpacks compressed ones (`Ucl::Unpack`). |
-| `sub_8209DE20` |  |  | Reads a request from `BUILD.DAT` or `BUILD_CRS.DAT` (byte offset = start sector << 11); a failed read calls `sub_8209AD48`. |
-| `sub_8209E0E0` |  |  | Reads a request from its loose file. |
-| `sub_82292050` | `Ucl::Unpack` |  | Unpacks a UCL stream (`uclpack` layout: 18-byte header, then blocks of BE decompressed size, stored size, data; a stored block is copied as is). Calls `sub_82292238` per block. |
+| `sub_8209DD38` | `Archive::Queue` | Overridden | r3 a 40-byte request (`Archive::Load`'s): copies it into a free slot (`Archive::FindSlot`) at the end of the queue, under the queue's lock; wakes the loader when nothing was queued and no wake is pending. Returns the serial, or -1 when all 960 slots are taken. Serials count up to 0x7FFFFFFF, then start from 0. |
+| `sub_8209E250` | `Archive::LoaderThread` | Overridden | The loader thread's body (no direct callers; started by `Archive::Init`; never returns). The game's: takes requests off the queue, reads them from a `.DAT` (`sub_8209DE20`, asynchronously, whole sectors) or a loose file (`sub_8209E0E0`), and unpacks a compressed one (`Ucl::Unpack`) while the next is read, alternating the two 5 MB halves of a staging ring. Ours (`--native_archive`, decided once at boot; the game's loop when the `.DAT` files don't open on the host): queue order. The next request's `.DAT` read runs on a host thread, into host memory, while the current one is unpacked or copied and its callback runs. The next request is marked as started where the game's picker marks it: before a compressed request's callback (except under flag 0x1, or a plain next request into the same destination), after a plain one's. Loose files are read through the game's read (`sub_8209E0E0`). No 5 MB limit. Stored UCL blocks go through the game's memcpy, bounced through the staging ring. Loads into the shared buffer that don't fit are refused (not written; the callback still runs). Callbacks get r3 the serial, r4 the data, r5 the size, r6 the context. Signals the idle semaphore when `Archive::WaitIdle` asked and the queue drained. `--log_archive` logs each load with its read, wait, overlap, unpack and callback times. |
+| `sub_8209DED0` | `Archive::PickNext` |  | The loader's picker (r3 the previous request): finishes a plain previous request (`sub_8209D7A8`) before picking the next; a compressed one is chained to the next (`sub_8209DA70`) and finished after the next read. Not picked early when both have flag 0x1, or when the next one is plain and reads into the same destination. Ours: the native loader thread (`sub_8209E250`). |
+| `sub_8209DA70` | `Archive::PickAndChain` |  | Picks the request after r3 (state 1, set up by `sub_8209D5B0`) and chains r3 to it (+84, r3 state 2); with none, r3 is chained to itself. |
+| `sub_8209D5B0` | `Archive::SetUpRequest` |  | Sets up a picked request for its read. |
+| `sub_8209D7A8` | `Archive::FinishRequest` |  | Runs the request's callback and frees its slot; VirtualFrees the data under flag 0x2 without 0x1000. |
+| `sub_8209DE20` | `Archive::ReadDat` |  | Reads a request (asynchronously; completion `0x8209D928`) from `BUILD.DAT` or `BUILD_CRS.DAT` (byte offset = start sector << 11); a failed read calls `sub_8209AD48`. |
+| `sub_8209E0E0` |  |  | The loose read (r3 a request slot): opens `game:\` + the request's path through the game's file class, seeks to the slot's +64, reads +68 bytes into +76, closes it and signals the read-done semaphore (`0x826AA748`). Our loader calls it for loose files and takes the semaphore back. |
+| `sub_82292050` | `Ucl::Unpack` | Overridden | Unpacks a UCL stream (`uclpack` layout: 18-byte header, then blocks of BE decompressed size, stored size, data; a stored block is copied as is). Calls `sub_82292238` per block. Ours (`src/game/ucl.cpp`, host memory only) stops before writing past the expected size; the original checks a compressed block after unpacking it. Checked against 16 `BUILD.DAT` entries and their GUT Archive Tools dumps. |
 | `sub_82292238` |  |  | Decompresses one UCL block. |
-| `sub_820A0860` | `Archive::GetSize` |  | r3 a file id: the TOC entry's decompressed size, or its stored size when that is 0. |
-| `sub_820F2E58` | `Scenery::Create` |  | The 248-byte course scenery manager (`docs/game_data.md`, "Courses"), stored at `0x826B51FC`; then `Scenery::Init`. From `sub_82159798` (races) and `sub_82225548` (front end). |
-| `sub_820F11F0` | `Scenery::Init` |  | r3 the manager: stores it at `0x826B51F4` and clears its lists and fields. |
+| `sub_820A0860` | `Archive::GetSize` | Overridden | r3 a file id: the TOC entry's decompressed size, or its stored size when that is 0. |
+| `sub_820F2E58` | `Scenery::Create` | Overridden | The 248-byte course scenery manager (`docs/game_data.md`, "Courses"), stored at `0x826B51FC`; its draw settings (+196 the passes' mask 0x38435, +200 to +212 four floats), its texture provider at +228; then `Scenery::Init`. From `sub_82159798` (races) and `sub_82225548` (front end). |
+| `sub_820F11F0` | `Scenery::Init` | Overridden | r3 the manager: stores it at `0x826B51F4` and clears its lists and fields (+172 and +176, the object last asked for, -1). |
 | `sub_820F1310` | `Scenery::ClearGlobal` | Overridden | Sets `0x826B51F4` to 0. |
 | `sub_82159798` |  |  | Race: makes the scenery manager and sets it up for the race's course: the index from `sub_8228C478` (place 1 for race modes 8-10, else place 0 and the race data's +32), the course table at `0x825F2E40`, streaming mode; then `Scenery::Setup` and `Scenery::StartLoad`. |
 | `sub_8228C478` |  |  | r3 x 3 + r4: the race's course index (place, variant). |
 | `sub_8228C488` |  |  | (r3 + 2) x 3 + r4: the front end's course index (scene, variant). From `sub_82229DD8`. |
-| `sub_820F2EF0` | `Scenery::Setup` |  | r3 the manager, r4 the 44-byte configuration: `Scenery::SetupPools`, then one 272-byte visible-area record per area at +224. |
-| `sub_820F25B0` | `Scenery::SetupPools` |  | Copies the configuration to +8; builds the light key table (+140, count +128) and the model key table (+168, count +156) from the course record at `[+36]`; sets up the five pools (sizes 60, 60, 3824, 88, 560). Pool 4's buffer is the shared load buffer (+188) when it's large enough. |
-| `sub_820F1EC0` | `Scenery::PoolSizes` |  | The area and model counts and each pool's data size (mode 0: the sum, else the largest; models at most 16). |
+| `sub_820F2EF0` | `Scenery::Setup` | Overridden | r3 the manager, r4 the 44-byte configuration: `Scenery::SetupPools`, then one 272-byte visible-area record per area at +224. Returns that block. |
+| `sub_820F25B0` | `Scenery::SetupPools` | Overridden | Copies the configuration to +8 (mode 2 with one view takes `[[+40]]`); builds the light key table (+140, count +128) and the model key table (+168, count +156) from the course record at `[+36]`; sets up the five pools (sizes 60, 60, 3824, 88, 560; a pool whose flag is clear keeps the previous one's sizes). Pool 4's buffer is the shared load buffer (+188) when it's large enough; its data size is 0. |
+| `sub_820F1EC0` | `Scenery::PoolSizes` | Overridden | The area and model counts and each pool's data size (mode 0: the sum, else the largest; models at most 16). The areas end at the first without lights. |
 | `sub_820F13C0` | `SceneryConfig::ModelAsset` | Overridden | r3 the configuration, r4 an area, r5 a model: the model's id (the area's first id + r5), or -1 past its last. |
-| `sub_820F1C90` | `Scenery::StartLoad` |  | Loads the course set (pool 2); in mode 0 lists every area and model to load. |
-| `sub_820F1DF8` | `Scenery::IsLoaded` |  | Polled until the course is in. |
-| `sub_820F23B0` | `CourseSet::Load` |  | Loads set file 1 (`[+36]+12`) into a block of its own and set file 2 (`[+36]+8`) into the object, the last with the callback `CourseSet::OnLoaded`. |
-| `sub_820F2148` | `CourseSet::OnLoaded` |  | `Archive::Load` callback: `CourseSet::Parse`, then frees set file 1's block. |
-| `sub_820F1900` | `CourseSet::Parse` |  | Set file 1: entry 0 an XPR2, 1 a model, 2-7 lists of models. Set file 2: entry 0 the areas, 1 the light groups' textures and animations, 2 the light groups. |
-| `sub_820F2188` | `AreaLights::Load` |  | Loads an area's light file (id from the light key table by the object's key at +84) with the callback `AreaLights::OnLoaded` (`sub_820F1AC0`). |
-| `sub_820F1050` | `AreaLights::Parse` |  | +80 = the light file's entry 0: the light set `Lights::FindNearest` reads. |
-| `sub_820F2250` | `AreaModel::Load` |  | Loads an area model (id from the model key table by the key at +64) into the manager's +188 (the shared load buffer) with the callback `AreaModel::OnLoaded` (`sub_820F1B78`). |
-| `sub_820F10E8` | `AreaModel::Parse` |  | Entry 0 into the model at +80, entry 1 into the XPR2 at +528. |
-| `sub_820F4428` | `Scenery::Update` |  | Each update: the areas and models near each camera (`Scenery::CollectAreas` `sub_820F2F68`, `Scenery::CollectModels` `sub_820F31A0`), streamed through `SceneryList::Stream` (`sub_820F1550`). |
-| `sub_820F5F48` | `Scenery::Draw` | Wrapped | The race draw step's part that draws the course (also calls `Minimap::Draw`). |
+| `sub_820F1C90` | `Scenery::StartLoad` | Overridden | Loads the course set (pool 2); in mode 0 lists every area and model to load; with pool 0, its object too. |
+| `sub_820F1DF8` | `Scenery::IsLoaded` | Overridden | Polled until the course is in: while +192 is set both lists all loaded (`SceneryList::LoadAll`), then the object last asked for loaded (or not in use). |
+| `sub_820F23B0` | `CourseSet::Load` | Overridden | Loads set file 1 (`[+36]+12`) into a block of its own and set file 2 (`[+36]+8`) into the object, the last with the callback `CourseSet::OnLoaded`. |
+| `sub_820F2148` | `CourseSet::OnLoaded` | Overridden | `Archive::Load` callback (r6 the set): `CourseSet::Parse`, then frees set file 1's block, then marks it loaded. |
+| `sub_820F1900` | `CourseSet::Parse` | Overridden | Set file 1: entry 0 an XPR2, 1 a model, 2-7 lists of models. Set file 2: entry 0 the areas, 1 the light groups' textures and animations, 2 the light groups. |
+| `sub_820F2188` | `AreaLights::Load` | Overridden | Loads an area's light file (id from the light key table by the object's key at +84) into its data with the callback `AreaLights::OnLoaded` (`sub_820F1AC0`). |
+| `sub_820F1050` | `AreaLights::Parse` | Overridden | +80 = the light file's entry 0: the light set `Lights::FindNearest` reads. |
+| `sub_820F2250` | `AreaModel::Load` | Overridden | Loads an area model (id from the model key table by the key at +64) into the manager's +188 (the shared load buffer) with the callback `AreaModel::OnLoaded` (`sub_820F1B78`). |
+| `sub_820F10E8` | `AreaModel::Parse` | Overridden | Entry 0 into the model at +80, entry 1 into the XPR2 at +528; +56 and +60 point at them when there. |
+| `sub_820F4428` | `Scenery::Update` | Overridden | Each update: the enabled camera passes set from their viewports (`sub_820AA460`); both lists cleared and filled from each view (`Scenery::CollectAreas`, then `CollectModels`), sorted and cut to +96 and +104 (`LimitLargeModels` between); loaded all at once (mode 0) or streamed; the visible areas (+216, +224) from the listed areas that are in and seen, with their listed models in and within viewport 0's far distance (each marked seen); streaming, the unseen released. 208-byte frame as the original's. |
+| `sub_820F5F48` | `Scenery::Draw` | Overridden | Each frame's passes: the texture provider reset; the texture animations stepped and the visible models' animations applied (`sub_820F1038`, `sub_8257A460`) unless +196 has 0x4000; the set's XPR in slot 0; the sky (+196 0x10: the set's model, world the identity at the camera's eye, range 5,000 to 50,000), the set's model list (+528, 0x20: models within the view's far distance), the visible areas (`DrawArea`, 10 passes then 3), the set lists (`DrawSetLists`), the light groups (0x400) and the minimap after its clear (`sub_8209FB30`, `sub_820F5610`). The pass records are 24-byte tables at 0x825F2FE8 to 0x825F31B0. Our C++ through `hooks::NativeCourseScenery_Draw`, called by the frame state diff's wrapper (`src/debug/frame_state_diff.cpp`). |
 | `sub_820FF4B8` | `TrackCollision::Load` |  | Once a race: the same course index as `sub_82159798`; loads the course record's mesh (+0) and route (+4). |
 | `sub_820F7680` | `TrackMesh::Load` |  | r3 `0x826B57FC`, r4 the mesh id: into its own block, callback `TrackMesh::OnLoaded` (`sub_820F6890`). |
 | `sub_820F9D08` | `TrackRoute::Load` |  | r3 `0x826B57F0`, r4 the route id: into its own block, callback `TrackRoute::OnLoaded`. |
@@ -156,8 +160,8 @@ with no row); run it after changing either.
 | `sub_82289118` | `TrackZones::Update` | Overridden | The HUD's 70 route zones (hard-coded ranges): road names and signs. Calls each zone's update in list order. |
 | `sub_8209AD48` |  |  | Read error: ends in `sub_82292D50`, which shows the dirty-disc screen (`XamShowDirtyDiscErrorUI`). |
 | `sub_82572370` |  |  | Reads a whole opened file into a buffer (r3 the file, r4 the buffer, r5 a pointer to the size); used for the TOCs and `DEBFONT.XPR`. |
-| `sub_820CC048` |  |  | Loads the parameter tables, BUILD 72-83 (72 = car specs) through `Archive::Load`; `sub_820C9700` sizes them first. |
-| `sub_821744D8` |  |  | Loads BUILD 22887, the loose `DATA\AUDIO\CAR_SE.XWB`, and starts the music (`Music::PlayRoaming`): a message handler of the scene (`sub_82175238`). |
+| `sub_820CC048` | `Params::Load` | Overridden | The twelve `Archive::Load`s of BUILD 72-83 into their tables, the parameter object as context (callbacks `sub_820CBFE8`, `sub_820CBE48`, `sub_820C9B90` for 74-82, `sub_820CBB30`); r3 the last serial. |
+| `sub_821744D8` | `RaceSounds::OnSceneStart` |  | Loads BUILD 22887, the loose `DATA\AUDIO\CAR_SE.XWB`, and starts the music (`Music::PlayRoaming`): the race sounds' state 1, message 4 (next state 38, or 24 in a replay). See `docs/audio.md`. |
 | `sub_82094BB8` |  |  | Startup; names the XACT engine `txr_xact` and calls `sub_821066D0` (which calls `Archive::Init`). |
 | `sub_8228CEE8` | `SaveGame::Write` | Overridden | One of four functions (with `sub_8228CFA8`, `sub_8228D228`, `sub_8228D370`) that open the save, `TXR360:\TXR_DATA_1`: formats the save's display name with the local time and asks the save interface for the write (`sub_820A0678`, 129,200 bytes). Logged by `src/hooks/autosave.cpp`'s override, which calls our C++ for it with `--native_save_interface` (`src/game/save_interface.cpp`). |
 | `sub_8228CDD0` | `SaveGame::DeviceState` | Wrapped | The save device's state. Logged with `--log_autosave` (`src/hooks/autosave.cpp`), as are the four below. |
@@ -175,22 +179,22 @@ with no row); run it after changing either.
 | `sub_820C9C50` | `Params::GetWheel` | Overridden | r3 a wheel number: returns record r3 - 1 of BUILD 73 (the wheels), or 0 for 0 (the stock wheel). |
 | `sub_820C9BA0` | `Params::GetCarParts` | Overridden | r3 the output (9 pointers), r4 a road car id: points into BUILD 74-82, the aero parts (strides 280, 280, 280, 280, 168, 168, 84, 108, 72). |
 | `sub_820CBFE8` |  | Overridden | Load callback for BUILD 72: stores the car count (size / 8432) at params+56 and byte-swaps the records (`sub_820CBF90` → `sub_820CBF08`, one swap per block: `sub_820CA2A0` block 1, `sub_820CBC10` block 2, `sub_820CA780` engine stage, `sub_820CAA48` tire, `sub_820CB1F8` paint, `sub_820CB328` wheel). |
-| `sub_820CB1F8` |  |  | Swaps a car's paint block, and fills in each slot's second shade (+12) for solid and metallic paints (`docs/game_data.md`). |
+| `sub_820CB1F8` | `Paint::Swap` | Overridden | Swaps a car's paint block, and fills in each slot's second shade (+12) for solid and metallic paints (`docs/game_data.md`). |
 | `sub_820C96C8` | `CarSpec::GetTire` | Overridden | r3 the spec, r4 the tire type (0-4), r5 the grade (1-5), r6 1 for the rear: returns tire 0 for type 0, else (type - 1) x 5 + grade. |
 | `sub_821ED5D8` | `WheelShop::MaxInchUp` | Wrapped | r3 the tuning menu: how many inch-ups the wheel shop offers for the garage car it shows, by car id: 20 minus the stock rim diameter, at most 4, on the road cars (RX8 2, RX7 3, N180 4); 0 for CON_X, the cut cars and any id over 22. The cut cars get the same rule (ECLI 3, L86/S30/T86 4) with `--cut_car_wheels` (`src/hooks/cut_car_wheels.cpp`). |
-| `sub_820C44C8` | `Tire::InchUp` |  | r3 a tire (a copy), r4 inches: bigger rims with the same outer diameter; recomputes width, aspect ratio, rim width and grip (`docs/game_data.md`, "Tires"). |
-| `sub_820C4698` | `Car::CopySpec` |  | r3 a car object, r4 its spec: copies block 1 to car+2240, block 2 to +1888, the engine stage at level [car+1652] to +2880, paint to +3364, and the front and rear tire (with inch-up) to +3084 and +3176. |
+| `sub_820C44C8` | `Tire::InchUp` | Overridden | r3 a tire (a copy), r4 inches: bigger rims with the same outer diameter; recomputes width, aspect ratio, rim width and grip (`docs/game_data.md`, "Tires"). |
+| `sub_820C4698` | `Car::CopySpec` | Overridden | r3 a car object, r4 its spec: copies block 1 to car+2240, block 2 to +1888, the engine stage at level [car+1652] to +2880, paint to +3364, and the front and rear tire (with inch-up) to +3084 and +3176; +3876, +3880 the widths' change. |
 | `sub_820C47A8` | `Car::Refresh` | Overridden | r3 a car object (car id at +12): `Car::CopySpec`, then the aero parts (`Car::ApplyAero`) and the front and rear wheels (+3268, +3316). 50+ callers (garage, shop, race setup). |
-| `sub_820C4378` | `Car::ApplyAero` |  | r3 a car object, r4 its `Params::GetCarParts` pointers: copies the aero part records at the levels in car+1740 to +1780 to car+3636 to +3875, through one getter per part (`sub_820CB5E8` ... `sub_820CBA30`; level 0 = no part). |
-| `sub_820CB468` |  |  | Byte-swaps a 28-byte part record after it's copied. |
+| `sub_820C4378` | `Car::ApplyAero` | Overridden | r3 a car object, r4 its `Params::GetCarParts` pointers: copies the aero part records at the levels in car+1740 to +1780 to car+3636 to +3875, through one getter per part (`sub_820CB5E8` ... `sub_820CBA30`; level 0 = no part). |
+| `sub_820CB468` | `AeroPart::Swap` | Overridden | Byte-swaps a 28-byte part record after it's copied. |
 | `sub_820C4360` | `Car::GetSpecSheet` |  | r3 a car object: returns car+1888 (its copy of block 2), or 0. |
 | `sub_820C2608` | `Vehicle::SetupFromCar` |  | r3 a vehicle, r4 a car object: copies the physics values from block 1 (dimensions, mass, wheelbase, tracks ...), the engine stage (rev limit, torque, +156-196) and the tires into the vehicle, then `Vehicle::ApplyTuning`. |
 | `sub_820C0B48` | `Vehicle::ApplyTuning` |  | r3 a vehicle, r4 a car object: applies the tuning at car+1644 using tables of multipliers built in the code (7 entries per part, separate NA and turbo tables), the engine type as a cylinder count, and the aero parts. |
 | `sub_822B8A90` |  | Overridden | Returns [r3+8] (with r3 = car+1644: the engine stage level). |
-| `sub_820A0A88` | `Shaders::LoadAll` | Overridden | At boot (from `sub_821067A0`): loads every shader pair through `sub_820A09D8`: BUILD 3-70 as indices 0-33, BUILD 22800-22811 as 1000-1005, and BUILD_CRS ids 24256-24367 as 2000-2055. A pair is a vertex shader (the odd id) and its pixel shader (the next id). See "Shaders" in `docs/game_data.md`. |
-| `sub_820A09D8` |  |  | r3 the vertex shader's file id, r4 the pair's index: loads the vertex shader and the pixel shader (r3 + 1) with `Archive::Load`. |
-| `sub_821364B0` | `Glow::Record` | Wrapped | The glow (bloom) recorder in races: builds the cross-fade quad (pixel shader `E0D070FB58A4EA03`, the vertex color's alpha is the history weight at +8460) and the glow constants c33 (+8436/+8440, +8452 the glow strength, +8456, +8476). |
-| `sub_82134EC8` | `View::UploadPreviousViewProjection` |  | r3 the view. Records vertex c100 x4, the motion blur's previous view-projection: copied from view+8080 (this tick's) when view+48 is set (a pass that ran the game logic) and view+44 is 0, else from view+8144 (the previous tick's). The view moves the pair on after the logic pass, so it's the same matrix all tick. Read by the motion blur's vertex shader (`matOldWVPVS`, BUILD 9/67). |
+| `sub_820A0A88` | `Shaders::LoadAll` | Overridden | At boot: every shared shader pair (BUILD 3-69 as 0-33, 22800-22810 as 1000-1005, BUILD_CRS 24256-24366 as 2000-2055) through LoadPair's C++, then the shared tables set; r3 and r4 left the two tables as SetSharedShaders leaves them. |
+| `sub_820A09D8` | `Shaders::LoadPair` | Overridden | r3 the vertex file id, r4 the pair: both files placed back to back in the shaders' buffer (`[0x82694E14]` + the cursor at `0x826B19B8`, moved on), a 12-byte context (the two places, the pair), two `Archive::Load`s, the second with `Shaders::OnPairLoaded`. |
+| `sub_821364B0` | `Glow::Record` | Wrapped | The glow (bloom) recorder in races: builds the cross-fade quad (pixel shader `E0D070FB58A4EA03`, the vertex color's alpha is the history weight at +8460) and the glow constants c33 (+8436/+8440, +8452 the glow strength, +8456, +8476).. Its +40 (set by `Glow::Glow` `sub_821370E8`, cleared by Record) makes the weight 0 for a frame: no history; set on camera cut ticks (`--reset_effects_on_camera_cut`, `src/hooks/post_effects.cpp`). |
+| `sub_82134EC8` | `View::UploadPreviousViewProjection` | Wrapped | r3 the view. Records vertex c100 x4, the motion blur's previous view-projection: copied from view+8080 (this tick's) when view+48 is set (a pass that ran the game logic) and view+44 is 0, else from view+8144 (the previous tick's). The view moves the pair on after the logic pass, so it's the same matrix all tick. Read by the motion blur's vertex shader (`matOldWVPVS`, BUILD 9/67). (The motion blur's record, vtable `0x820087F8` slot 0: the post effects share a base with +36 the camera pass, +40 a first-frame flag it clears.) On camera cut ticks both matrices are the camera pass's for the call, so there's no camera motion (`--reset_effects_on_camera_cut`, `src/hooks/post_effects.cpp`). |
 | `sub_820A3088` | `Matrix::RotateZ` |  | r3 out, r4 in, r5 &angle: out = in * RotZ. |
 | `sub_820A0E18` | `Matrix::Copy` |  | r3 destination, r4 source, 4x4. |
 | `sub_8257CC90` | `Matrix::LookAt` |  | r3 out, r4 eye, r5 target, r6 up: a row-vector view matrix, forward = target - eye. |
@@ -206,18 +210,19 @@ with no row); run it after changing either.
 | `sub_820D32D0` | `Dial::Angle` |  | A needle's angle from a gauge value. |
 | `sub_820D3388` | `Dial::TachometerAngles` |  | The tachometer's two angles from the revs. |
 | `sub_8211D4B8` | `UiMovie::Update` | Overridden | r3 the movie, r4 0 = advance a frame and draw, 1 = draw only. Runs the HUD, the race start countdown and the pause menus. Advancing is replayed from the logic pass on render-only passes (`src/subtick/per_frame_logic.cpp`), whose override calls our C++ for it with `--native_ui_movies` (`src/hooks/ui_movies.cpp`): the queued and looping animations applied (`sub_82585FD8`) and their times stepped, the ended ones taken off the queue. |
-| `sub_8211CF58` | `UiMovie::DrawQueuedText` |  | r3 the movie, r4 its text queue (movie+40: +0 entries of 128 bytes, +8 their count), r5 draw only: draws each queued text and takes it off, from the last. An entry: +0 its node, +16 its transform (16 floats). A scrolling text's x from `TickerText::Offset`, then `TickerText::Step` unless draw only. |
+| `sub_8211CF58` | `UiMovie::DrawQueuedText` | Overridden | r3 the movie, r4 its text list (+0 the 128-byte items, +8 their count), r5 draw only: each queued text drawn and taken off, last first. The item copied into the frame (`sub_8211B0A0`); its matrix's origin is the text's place (`sub_820AB518`); the matrix's scales and the item's clip written into the text node (+28, +32, +40 to +52); the font's style built in the frame from the node (pivot, rotation, color times the item's, alpha, box, spacings, alignments, layer) with the page from the node's size flags (+76: bit 0 page 0, 1 page 1, 2 page 2, 3 page 3, 4 page 2 with glyphs at 0.65, none page 2). A scrolling text's x from `TickerText::Offset`, then `TickerText::Step` unless draw only. The text's page copied (`Strings::CopyPage`) and drawn (`Text::Draw`). |
 | `sub_8211B9D0` | `TickerText::Offset` | Wrapped | r3 the movie, r4 the text's draw (+0 x, +8 width, +120 id): the x a scrolling text is drawn at, from its record in the movie's node map (movie+39884: +4 set, +8 frame count, +12 frames before it scrolls, +16 speed). Between ticks taken between the last two frame counts (`src/subtick/per_frame_logic.cpp`). |
 | `sub_8211BB10` | `TickerText::Step` | Wrapped | r3 the movie, r4 the text's id: counts a frame on its record. Skipped on render-only passes (`src/subtick/per_frame_logic.cpp`). |
 | `sub_821196D0` | `AudioManager::PlayCue` | Wrapped | From the AudioManager's 2D and 3D cue slots (`sub_82119808`, `sub_821197D8`; its vtable is `0x82008318`, so `MenuSound::Play`'s slot 10 is `sub_82119808`). Nothing is started while the menus' drawing is redrawn between ticks (`src/subtick/per_frame_logic.cpp`). |
 | `sub_82210730` | `RaceHud::RunCountdown` | Wrapped | r3 the HUD: runs the countdown movie (+612) and stores whether it's still going in +436, which the countdown state's Update (`sub_8216AA40`) waits on. Called from that state's Draw (`sub_8216A1C8`), so on every pass; on render-only passes +436 keeps the logic pass's value (`src/subtick/per_frame_logic.cpp`): a replay after a race stayed in the countdown state, with the race HUD and the race's pause menu. |
 | `sub_82225DE0` | `ParkingArea::DrawScene` | Wrapped | r3 the area (`[0x8280DE60]`): its camera from +592 (eye) and +608 (target), then its scenery (`Scenery::Draw` on +552). From the parking area's handler `sub_8222C840` (message 0), which then draws the cars (draw object +5004 = 1, `sub_82225918`, `sub_820C93A8`, `sub_820C5BA0`). Drawn again between ticks with `--subtick_menu_3d` (`src/subtick/per_frame_logic.cpp`). The camera passes it updates are noted for the native renderer's own passes (`CarTransforms_MenuSceneBegin`/`End`, `--xegtao`). |
 | `sub_8217DD48` | `GarageStage::Step` | Wrapped | r3 the stage's holder (+0 the stage, 6208 bytes, `VirtualAlloc`), r5 keep the camera's pitch in range: moves the camera around the car (`sub_82179EE8` → `CameraPass::Update`), turns and poses the car (`sub_8217A9D0`) and draws it on its stage (`sub_820C5BA0`, `sub_820C8238`). Called from the garage's and shops' messages, once a tick; drawn again between ticks with `--subtick_menu_3d` (`src/subtick/per_frame_logic.cpp`). The camera passes it updates are noted for the native renderer's own passes (`CarTransforms_MenuSceneBegin`/`End`, `--xegtao`). |
-| `sub_82585FD8` | `UiMovie::ApplyAnimation` |  | Applies each playing animation's tracks with t = (time - k0) / (k1 - k0), clamped. |
-| `sub_82585C40` | `UiMovie::ApplyTrack` | Overridden | r3 the node, r4 the track (+0 its property id), f1 t: writes one word into the node. Some tracks add to the value instead of setting it. r5 and r6 the keys t is between; a key blends as a step, a line or a curve. Subtick's override (`src/subtick/per_frame_logic.cpp`, the adds once a tick) calls our C++ for it with `--native_ui_movies` (`src/hooks/ui_movies.cpp`). |
-| `sub_82585560` | `UiMovie::TrackProperty` |  | r3 a property id: its 12-byte descriptor (+0 node offset, +4 type). |
-| `sub_82582D50` | `UiMovie::Child` |  | r3 the node, r4 an index: that child (count at node+112). |
-| `sub_82119D50` | `UiMovie::RestorePose` |  | Copies a movie's rest pose back onto its live nodes. |
+| `sub_8217A620` | `PowerGraph::Draw` | Wrapped | f1 the graph's left x, f2 its base y, r6 a car data (+1280 the rev limit, +1292 32 torque points 400 rpm apart, +1420 their scale; r3 passed on, not read): the torque and power curves as line segments (`Line::RecordFlat`, `sub_82179558`). From `TuningScreen::DrawPowerGraph` (`sub_821DD790`, the tuning screen's update `sub_821E5010`) and the garage's car lists (`sub_8224E050`, `sub_8224E0E0`), once a tick. In the menus with --subtick each call is noted with a copy of the curve and drawn again on render-only passes (`src/subtick/per_frame_logic.cpp`): it flickered. |
+| `sub_82585FD8` | `UiMovie::ApplyAnimation` | Overridden | The animation's tracks and sub-animations at time f1 on the node; whether it's still going. |
+| `sub_82585C40` | `UiMovie::ApplyTrack` | Overridden | r3 the node, r4 the track (+0 its property id), f1 t: writes one word into the node. Some tracks add to the value instead of setting it. r5 and r6 the keys t is between; a key blends as a step, a line or a curve. Subtick's override (`src/subtick/per_frame_logic.cpp`: the adds once a tick; on render-only passes every word a track writes is put back after the outermost update has drawn, as the nodes are outside the bytes the replay restores) calls our C++ for it with `--native_ui_movies` (`src/hooks/ui_movies.cpp`). |
+| `sub_82585560` | `UiMovie::TrackProperty` | Overridden | Property r3's descriptor, the table cleared and filled on first use. |
+| `sub_82582D50` | `UiMovie::Child` | Overridden | The child r4 of a group or scene (the entry [+108] + r4). |
+| `sub_82119D50` | `UiMovie::RestorePose` | Overridden | The live scene's nodes put back to the rest pose (common fields, then per type), groups and scenes recursed. |
 | `sub_8210B140` | `ActionMappers::Update` | Wrapped | r3 the mapper list: updates every action mapper (`ActionMapper::Update` each): held, pressed and fired words, and the menu repeat. Counts calls, so it must run once a tick: skipped on render-only passes, except when `src/subtick/input.cpp` runs it for the analog values. |
 | `sub_8210C4A8` | `ActionMapper::Update` | Wrapped | r3 the mapper: raw axes from the logical pad (`[+2880]`) into +388..+446, then `ActionMapper::UpdateActions`. Digital state put back after it when run for the analog values (`src/subtick/input.cpp`). |
 | `sub_82209F78` | `MenuList::Update` |  | A menu list's update. |
@@ -229,71 +234,115 @@ with no row); run it after changing either.
 | `sub_82127C08` | | Wrapped | Single world-space sprite recorder (r3 = sprite, r4 = camera pass), reached through `sub_82128CF8`. Corners blended between ticks, except for the marker (blended by its centre in `sub_8212BDA0`). ITC's `sub_821281A8`. |
 | `sub_8212BDA0` | | Wrapped | The opponent marker's overlay record (vtable slot 5; r3 = overlay, r4 = camera pass index; ITC's `sub_8212CE40`): builds the sprite on the stack from its centre (overlay +176..+184, set once a tick) and axes facing the camera pass's eye. With `--subtick` the centre is blended between ticks for the call. |
 | `sub_82102B30`, `sub_82102BB0` | | | Replay: store the player's control record (r3 = record, r4 = pad), and replace it from the replay while one plays; from `sub_8215E390` right after `PlayerControls::Build`. |
-| `sub_821573E0` |  | Wrapped | Probably the rival intro cutscene's Update handler: 107 of its 126 expected instructions line up, but it's 210 long and makes calls the expected one doesn't. Not checked. |
+| `sub_821573E0` | `RaceCamera::Update` | Wrapped | The race mode's Update handler (`0x82157948` jumps to it): the race camera's tick (see "Race camera"). Wrapped for the rival intro's logo by `src/subtick/per_frame_logic.cpp`, which calls our C++ for it with `--native_race_camera` (`src/game/race_camera.cpp`). |
 | `sub_8220F7B0` | `RivalLogo::Draw` | Overridden | Draws the rival's logo: with its entry's flag 8, its UI movie looked up and run, and flag 16 set when it's over. Kept for render-only passes by `src/subtick/per_frame_logic.cpp`, which calls our C++ for it with `--native_race_hud` (`src/game/race_hud.cpp`). |
 | `sub_8246BD88` | `MoviePlayer::OpenFile` |  | The movie player's file open (through a vtable); calls `CreateFile`. |
 | `sub_820AE840` |  | Overridden | The render thread's command that starts the boot movie. |
 | `sub_82106540` | `Bgm::Load` | Wrapped | r4 a bank name: looks it up in the table at `0x820069B0` (`bgm_tmp_01`-`17`, `BGM_SYSTEM`) and loads its sound bank (BUILD 22970 + i) and wave bank (22988 + i), or `SB_SYSTEM_SE` (22885, 22886) for any other name, through the sound object at `[0x826B5960]` (vtable slot 4). See `docs/audio.md`. Who calls it, by return address: "Music" in `docs/audio.md`. Custom music rolls first, by the caller, and for a blocked song hands it another name from the same list (`src/hooks/custom_music.cpp`). |
-| `sub_82173C70` | `Music::PlayRoaming` |  | r3 the scene: by its music mode (+9652), modes 2, 4, 5, 6 play one of entries 1-5 of `0x82609334` with `sub_8258F558() % 5` (the game's random roll), other modes entry 0 (`bgm_tmp_06`). From `sub_821744D8` and `sub_82174668`. |
+| `sub_82173C70` | `Music::PlayRoaming` |  | r3 the scene: by its play mode (+9652, a copy of the race data's +827888), play modes 2, 4, 5, 6 play one of entries 1-5 of `0x82609334` with `sub_8258F558() % 5` (the game's random roll), other modes entry 0 (`bgm_tmp_06`). From `sub_821744D8` and `sub_82174668`. |
 | `sub_821741B8` | `Music::PlayRequested` |  | r3 the scene: plays the music each bit at +9644 requests and clears it (0x40, 0x80, 0x100, 0x200-0x2000: "Music" in `docs/audio.md`). |
 | `sub_821743B0` | `Music::RequestBattle` |  | r3 the scene: sets the music bit at +9644 for the opponent, by its record's (`sub_821172E0`) class byte (+35) and its id ("Music" in `docs/audio.md`). |
-| `sub_82174AD0` |  |  | Message handler of the scene: plays entry 12 of `0x82609334` (`bgm_tmp_08`, race-end music) under conditions. |
+| `sub_82174AD0` | `RaceSounds::TickAfterBattle` |  | The race sounds' tick in state 30 (after a battle): the car sounds' tick, the music change steps (`docs/audio.md`), loading the win or lose music itself (entry 11 or 12 of `0x82609334`). |
 | `sub_822624F0` |  |  | Plays `bgm_tmp_14` or `bgm_tmp_08` by comparing +9672 and +9668 of r31 (race end, by the custom music categories; not checked). |
 | `sub_821B8580` |  |  | Plays one of the 17 `bgm_tmp_` tracks by a setting (`[[r31+32544]+740]`, 0 = `bgm_tmp_01`): the music select. |
-| `sub_82175238` |  |  | Registers the scene's message handlers (the music ones above, `sub_821744D8`, ...) and sets its music mode (+9652) from a table indexed by the game state. |
+| `sub_82175238` | `RaceSounds::Init` |  | Copies the race data's play mode (+827888) to the scene's +9652, allocates the seven car slots' engine bank buffers, makes the car sounds (`CarSounds::Init`) and registers the race sounds' handlers: (state, message) -> handler, next state, listed in "The race sounds" in `docs/audio.md`. |
 | `sub_82118818` |  |  | Builds `data\audio\%s.xgs` and reads the XACT global settings (`TXR_XACT.XGS`). |
 | `sub_8244D0A0` | `AudioRenderDriver::Register` | Overridden | r3 the driver object (callback argument +12, handle +16), r4 the mixer callback: `XAudioRegisterRenderDriverClient`. Reached only through a vtable. |
 | `sub_8244D128` | `AudioRenderDriver::Submit` | Overridden | r4 the mixed buffer (descriptor from `sub_82448738`): `XAudioSubmitRenderDriverFrame`. |
 | `sub_8244D188` | `AudioRenderDriver::Destroy` | Wrapped | Unregisters the client (`XAudioUnregisterRenderDriverClient`). |
+| `sub_821199B0` | `AudioManager::AudioManager` |  | r3 the object (0x658 bytes), r4 the app, r5 the engine name, r6 the bank slot count: the XLAudio engine (XAudio, X3DAudio), the listener, the bank slots, the XGS load task (`sub_82118818`), its tick handler `AudioManager::Update` and app event listener `AudioManager::OnAppEvent`. Made by `sub_82119D08` from `sub_82094BB8` (`txr_xact`, 3 slots). Vtable `0x82008318`; its 33 slots are listed in `docs/audio.md`. |
+| `sub_82119288` | `AudioManager::Update` |  | A run-loop tick handler: XACT DoWork, every playing sound's update (`Sound::Update`), finished sounds dropped. |
+| `sub_821192F8` | `AudioManager::OnAppEvent` |  | An app event listener: on 5 every sound released, on 6 it registers again (suspend and resume, probably). |
+| `sub_82118220` | `AudioManager::Load` |  | Vtable slot 4: r4 the slot, r5 the name, r6 a flag, r7 and r8 the wave and sound bank archive ids: a `BankPair` made into the slot and loaded. From `Bgm::Load`. |
+| `sub_821182F8` | `AudioManager::Release` |  | Vtable slot 5: r4 the slot: its `BankPair` released. |
+| `sub_82118368` | `AudioManager::IsLoading` |  | Vtable slot 6: r4 the slot: 1 while either bank isn't in. |
+| `sub_821183D8` | `AudioManager::IsLoaded` |  | Vtable slot 7: r4 the slot: 1 once both banks are in. |
+| `sub_82118448` | `AudioManager::IsEmpty` |  | Vtable slot 8: r4 the slot: 1 if it holds no `BankPair`. |
+| `sub_82118C60` | `AudioManager::StopCue` |  | Vtable slot 13: r4 the slot, r5 the cue: every playing one-shot of that cue stopped. |
+| `sub_82118D28` | `AudioManager::IsCuePlaying` |  | Vtable slot 14: r4 the slot, r5 the cue: 1 if one is playing. |
+| `sub_82117FD0` | `AudioManager::GetCategory` |  | Vtable slot 29: r4 the name: the XACT category, -1 for none. |
+| `sub_82117FD8` | `AudioManager::SetCategoryVolume` |  | Vtable slot 30: r4 the category, r5 the volume. |
+| `sub_82117FE0` | `AudioManager::PauseCategory` |  | Vtable slot 31: r4 the category paused. Slot 32 (`sub_82117FE8`) unpauses it. |
+| `sub_82117E70` | `BankPair::BankPair` |  | r3 the pair (0x70 bytes): its fields (`docs/audio.md`), then `BankPair::Load`. |
+| `sub_82117A30` | `BankPair::Load` |  | Both banks read from the archive: slot 2 into the fixed buffers `[0x826B5968]` and `[0x826B596C]`, the other slots into new ones; the archive's callbacks make the XACT banks. |
+| `sub_821174B0` | `Sound::Sound` |  | r3 the sound (0x18 bytes), r4 the slot, r5 the cue, r6 the bank interface: its cue holder (`Emitter::Emitter`) prepared. |
+| `sub_821175A0` | `Sound::Update` |  | Plays the cue once prepared, applies its 3D, and plays a stopped sound again when its +9 is set. |
+| `sub_82110180` | `AudioSystem::Init` |  | At boot (`sub_821066D0`): r3 the AudioManager into `[0x826B5960]`, the volume globals to 1.0, the music buffers (`[0x826B5968]` 3 MB, `[0x826B596C]` 512 bytes), `SB_SYSTEM_SE` into slot 0 (`Bgm::Load`), the car sounds' X3DAudio at `0x826B5970`. |
+| `sub_821102B0` | `AudioSystem::Shutdown` |  | Slot 0 released and the music buffers freed. From `sub_82106800`. |
+| `sub_8210FC00` | `CarSounds::Init` |  | The seven car audio objects (0x4F0 bytes each) into `[0x826B591C]` and the car submix voice into `[0x826B5924]` (6 channels, 48 kHz, its effect from `0x826065C0`). From `RaceSounds::Init`. |
+| `sub_8210FE48` | `CarSounds::Release` |  | The seven car audio objects and the submix released. From `sub_82175198` (state 37, message 50). |
+| `sub_8210FEC0` | `CarSounds::StopAll` |  | `CarSound::Stop` on each of the seven slots. |
+| `sub_82173DE0` | `CarSounds::Tick` |  | The cars' tick, from the race sounds' ticks in states 38, 23 and 30: waits out scene+9656, skips the cars while the state bit 0x4000 is set or 0x20000 isn't, builds each car whose banks just loaded, then `CarSound::Update` for every race car; pauses the cars while the system UI flags `[0x826B7420]`, `[0x826B7424]` are set. |
+| `sub_82174048` | `CarSounds::Build` |  | Builds every race car's audio object from its loaded banks and sets the state bit 0x20000. From the race sounds' ticks while scene+9648 is 1, and `RaceSounds::OnRollingStart`. |
+| `sub_8210FFA0` | `CarSound::Update` |  | r3 the car audio object (the car at +400): its 3D (`sub_8210E4D8`), engine (`sub_8210E958`) and `car_se` parts; the submix's effect by the car's tunnel flag. See "Car sounds" in `docs/audio.md`. |
+| `sub_8210E4D8` | `CarSound::Update3D` |  | X3DAudio for the car from the camera; every output level times the effects level `0x82606BC0` (the cockpit view: unpositioned, 0.4 times it). |
+| `sub_8210E958` | `CarSound::UpdateEngine` |  | The engine's two banks of four layers, crossfaded and pitched by rpm and throttle on the set's curve block. |
+| `sub_82174668` | `RaceSounds::TickDriving` |  | The race sounds' tick in state 38: builds or ticks the cars, then the music change steps (`docs/audio.md`), with `Music::PlayRoaming`. `sub_82174890` (state 23, a battle), `sub_82174DE8` (17) and `sub_82174FF0` (10) are the same with `Music::PlayRequested`; only 38, 23 and 30 tick the cars. |
+| `sub_821737C8` | `RaceSounds::FadeMusic` |  | One fade step: the music level (`0x82606B74`) down by the saved level (`0x82606BBC`) x 0.1, the Music category set; 1 once at 0. |
+| `sub_82173888` | `RaceSounds::RestoreMusicLevel` |  | The music level back to the saved level, the Music category set. |
+| `sub_821739A8` | `RaceSounds::Pause` |  | Message 29: every car slot paused and the Music category paused. |
+| `sub_82173A40` | `RaceSounds::Unpause` |  | Message 29 in the paused states: the cars resumed (slot 0 seven times, as `RaceSounds::ResumeCars`) and the Music category unpaused. |
+| `sub_82173AC0` | `RaceSounds::StopCars` |  | Messages 31, 49, 58: every car slot paused; the music plays on. |
+| `sub_82174A60` | `RaceSounds::OnBattleOver` |  | Messages 34, 36 and 19: the effects level x 0, the cars' tick, the music level saved, a music change asked for. |
+| `sub_82173900` | `RaceSounds::TickLeaving` |  | State 37's tick: once, cue (2, 0) stopped and every car slot paused. |
+| `sub_821078D0` | `Modes::Create` |  | r4 the game mode (1-12): its mode object (1 the race, 2 the garage, 4 the title, 5 the parking area). |
+| `sub_8214D900` | `SystemUi::Update` |  | The sign-in UI and system message box flags (`[0x826B7420]`, `[0x826B7424]`) around `XamShowSigninUI` and `XamShowMessageBoxUI`. |
+| `sub_82582450` | `XLAudio::InitAudio` |  | `XAudioInitialize`: 6 channels, 48 kHz. |
+| `sub_825828F0` | `XLAudio::CreateEngine` |  | r4 a game file (the XGS): `XACTCreateEngine` (`sub_825A4B68`) and Initialize with its contents. |
 | `sub_8257C880` | `XPR::Create` | Wrapped | r3 the XPR object, r4 the loaded file: checks `XPR2`, copies the header to normal memory and the data to physical memory, relocates each `TX` resource (`docs/game_data.md`, "XPR2 loading"). Object: +0 header, +4 its size, +8 data, +12 its size, +16 records, +20 record count. The wrapper registers the stand-ins of a pack with a sidecar (`.sbpr`) with the renderer, after the original has relocated them (`src/hooks/sidecar.cpp`; `docs/game_data.md`, "Sidecar textures (SBPR)"). |
 | `sub_8257CA30` | `XPR::GetTexture` |  | r3 the XPR object, r4 an index: that resource's header; an index past the end gives resource 0. |
-| `sub_8257C7A0` | `XPR::FindTexture` |  | r3 the XPR object, r4 a name: the resource with that name, or 0. |
-| `sub_8257C9C0` | `XPR::Release` |  | Frees the header and data. |
-| `sub_82354AC8` | `TextureHeader::Relocate` |  | r3 a texture header, r4 the data's address, r5 the mips' address: adds them to the base (+0x20) and mip (+0x30) address fields. |
+| `sub_8257C7A0` | `XPR::FindTexture` | Overridden | r4 a name: the first record whose name matches (`_stricmp`) gives the header + its offset; 0 with no records, no name or no match. |
+| `sub_8257C9C0` | `XPR::Release` | Overridden | The header block through FreeLater, the data block through FreePhysicalLater (`0x807F0000`), every word cleared. |
+| `sub_82354AC8` | `TextureHeader::Relocate` | Overridden | r4 added to +32 above its low 12 bits, r5 to +48 when the texture has more than one mip level. r3 left the level count. |
 | `sub_82573B80` | `Memory::Alloc` |  | r3 a size: page-aligned memory, tagged `XLMM`. |
-| `sub_82573CC8` | `Memory::AllocPhysical` |  | r3 a size, r4 flags: physical (GPU-visible) memory, tagged `XLMM`. |
-| `sub_8257A150` | `XPRList::XPRList` |  | A model's list of XPR objects (`XLRes_Tex.cpp`; vtable `0x82069A94`). r4 the reserved size (-1 = 64). |
-| `sub_8257A018` | `XPRList::Set` |  | r4 an index, r5 an XPR object. Growing past the reserved size asserts (`XPR LIST RESERVE !!!`). Vtable +16. |
-| `sub_82579FB8` | `XPRList::Get` |  | r4 an index: that XPR object, or 0. Vtable +12. |
+| `sub_82573CC8` | `Memory::AllocPhysical` | Overridden | r3 bytes, r4 XMemAlloc's attributes: under the memory blocks' lock (`0x8296E198`), `XMemAlloc((r3 + 8191) & ~0xFFF)`, its 4 KB header `XLMM`, kind 2, countdown 1; the block after it, or 0. |
+| `sub_8257A150` | `XPRList::XPRList` | Overridden | Vtable `0x82069A94`, the vector cleared, r4 slots (-1: 64) reserved and assigned empty (Reserve's and Assign's C++, the value on the host). |
+| `sub_8257A018` | `XPRList::Set` | Overridden | r4 the slot, r5 the texture: stored; a slot past the list's size or room (or no storage) runs the original, which grows it.|replaces `sub_8257A018` |
+| `sub_82579FB8` | `XPRList::Get` | Overridden | Vtable slot 3: r4 a slot, its XPR or 0 (no storage, past the size). |
 | `sub_825797A8` | `XPRList::GetTexture` |  | r4 the XPR's index, r5 the texture's: `XPR::GetTexture` on that XPR. Vtable +20 (and +24, +28). |
 | `sub_82579808` | `XPRList::FindTexture` |  | r4 the XPR's index, r5 a name: `XPR::FindTexture`. Vtable +32. |
-| `sub_8257C238` | `Model::Load` |  | r3 the model, r4 the mesh file, r5 an XPR2 file or 0: `Mesh::Parse`, then `XPR::Create` into model+56, which goes into the model's XPR list (model+80, pointer at +48) at index 0. |
-| `sub_8257BD58` | `Mesh::Parse` |  | Checks the `00 15 00 00` version (`Version Error %x`), loads the shaders, copies the file up to its vertex data into normal memory. |
+| `sub_8257C238` | `Model::Load` | Overridden | r4 the mesh file, r5 an XPR2 file or 0: `Model::Release`, `Mesh::Parse`, the XPR made (`XPR::Create`) and set in the XPR list's slot 0 (slot 4 of its vtable; +48 = the list); then each skinned mesh's weights rounded to thousandths (x 1000 + 0.5 fused, truncated, x 0.001), each vertex's last weight 1 less the others. Returns the shape count. |
+| `sub_8257BD58` | `Mesh::Parse` | Overridden | The `00 15 00 00` version (else `Version Error %x`), `Mesh::LoadShaders`, the header (the file up to its vertex data) copied to `Memory::AllocVirtual`'s block (+16) and its offsets made addresses (+28 to +44, the meshes' +396 to +408 and their weights', the materials' +384), the skeleton and track sets from its sections (with header +76), the float4 set always; with shapes, the vertex data into `AllocPhysicalEx(size, 0, -1, 4, 0x404)` (+20) and each mesh's buffers (one when skinned) and materials' buffers relocated. Its memcpys keep the original's return addresses. |
 | `sub_8257A620` | `Mesh::LoadShaders` | Overridden | Loads the mesh file's vertex and pixel shaders (`XPhysicalAlloc Error Vertex Shader` / `Pixel  Shader`). |
-| `sub_8257AE50` | `Model::RecordShape` |  | Records one shape's draws: shaders, constants, and for each material its textures through `XPRList::GetTexture` (material +0x98 the XPR, +0xB8 the texture). |
-| `sub_8257BA38` | `Model::RecordShapeUntextured` |  | Like `Model::RecordShape` without textures (probably a depth or shadow pass). Called from `Model::Draw`. |
-| `sub_820CEA60` | `Model::RecordMaterials` |  | Called from `Model::Draw`. Switches on each material's shared shader pair (+392 from the record's +8, the record's +0x190: 1000-1004; `docs/game_data.md`, "Part files") and binds the car's vinyl sheet (model+444) for 1000 and 1004. |
-| `sub_820CE7B8` | `Model::SetVinylTextures` | Overridden | r4, r5: stored at model+444 and +448. |
-| `sub_820D5B70` | `CarModel::LoadExterior` |  | Loads set a (mode 0) or set b (mode 1), the mode being the word at +8 of `[car model+7256]`, then `CarModel::LoadDecals`. Also creates the vinyl sheet (`Texture::Create`, 1024 x 1024 A8R8G8B8). |
-| `sub_820D5680` | `CarModel::LoadSetA` |  | Node file 892 + 226 x car and body XPR2 890 + 226 x car (car = car model+32), each in its own allocation. |
-| `sub_820D5768` | `CarModel::LoadSetB` |  | Node file 11062 + 197 x car and body XPR2 11060 + 197 x car, the XPR2 into the shared load buffer (no size check). |
-| `sub_820D57F8` | `CarModel::LoadDecals` |  | Loads the 6 vinyl layers and 48 stickers (TGA) into slots at car model+4092 and +4380 (`docs/game_data.md`, "Car decals"). |
-| `sub_820D53F8` | `CarModel::OnDecalLoaded` |  | Load callback: marks the slot done and calls `Vinyl::DrawDecals`; when all are done, `Vinyl::ClearCorner` and `Vinyl::Compress`. |
-| `sub_820D5C30` | `CarModel::SetVinylTextures` |  | Gives the vinyl sheet (car model+6684, +6692) to the six models at car model+688 (464 bytes apart). |
-| `sub_820D0620` | `LoadSlot::LoadShared` |  | r3 a 24-byte slot (+0 id, +4 request, +8 size, +16 buffer, +20 state: 1 empty, 2 loading, 3 done), r4 an id: loads it into the shared load buffer, or marks the slot empty if it doesn't fit. |
-| `sub_820D0588` | `LoadSlot::LoadAllocated` |  | The same into a buffer allocated for the file. |
-| `sub_820D7660` | `CarInterior::Load` |  | Loads the interior parts from set c when +3088 is set, else set a or b by mode (`CarInterior::LoadParts` with the body XPR2's id, the stride and the interior's offset: 890/226/219, 11060/197/190, 19925/55/49). |
-| `sub_820D73E0` | `CarInterior::LoadParts` |  | Loads six consecutive part ids: meters, roll cage, interior, gauges, seats, steering wheel. |
-| `sub_820E6CA8` | `Car::SetupSettings` |  | r3 a car object, r4 its settings (156 bytes: copied to r3+32, filled in, copied back; `Wheels::Setup` later copies them to car model+28); when the front and rear wheel numbers (settings +16, +32) are both -1 and the model block is 18 or more, calls `Wheels::BlockDefault`. |
+| `sub_8257AE50` | `Model::RecordShape` | Overridden | r4 a shape, r5 the group, r6 whether to set the shaders, r7 a pixel constant (c76) or 0, r8 a vertex scale (c86) or 0. 0 with no materials; else a chunk: header (10), the vertex declaration, the streams (11; two for types 9 and 10 or a third of 6) and a skinned mesh's indices (22), sampler state 28 of samplers 0-3; per material the shaders (own pair or shared), vertex c9-c13 (the textures' colors from the model's float4 track values, then the material's color, the material animation and the model's slot-1 hook with the blend index's frame address), pixel c63-c67, blend (the table at `0x8264EC14`), render states 96/100 (group 0) and 56, the textures (XPR list slot 5) and their sampler states, the environment textures (slots 6 and 5), c86 and c76 with their defaults put back after the draw (12, 18); command 36. Returns the header slot. A 304-byte frame as the original's; its arguments saved in the caller's frame. |
+| `sub_8257BA38` | `Model::RecordShapeDepth` | Overridden | r4 the shape, r5 the group, r7 a mask, r8 the alpha flag: 0 for a group without materials; else one chunk: the depth declaration (10, `sub_8256F4F0` of the mesh's +260), stream 1 (11: +320, or a skinned mesh's +412, stride +264), pixel c43 from 0x8264EA70, a skinned mesh's indices (22, its +408's +20), then each material passing the mask (its +404) and the alpha flag (its +388): render states 100 (+112) and 56 (+344), its indices (12, &+352), the draw (18: +348, +340); 36. Model::MaterialCount called before each material, as the original.|replaces `sub_8257BA38` (`Model::RecordShapeUntextured`) |
+| `sub_820CEA60` | `Model::RecordMaterials` | Overridden | A car part's shape (r3 the part model, r4 the shape, r5 the group, r6 whether to set the shaders): 0 with no materials; else a chunk: header (10), the vertex declaration, the streams and skin indices (as RecordShape's); per material the shaders (own pair, or the shared pair: 1005 when the part's +440 is set, 1000 for 1004), blend (the table at `0x825F1854`), vertex c9-c13 (four (0, 0, 0, 1), the textures' colors from the float4 track values, the material's color), pixel c63-c67, render states 96 (group 0), 48 (0 with `[0x826B4DE4]` set), 100 and 56 (2 and 6 swapped with `[0x826B4DE0]`); the textures: none (4 unset) for an untextured own pair; for shared pairs 1000/1004 the vinyl sheet (+444), 1001 the XPR list's, 1002 the XPR list's and the vinyl sheet, 1003 the XPR list's with the part's +460 for the id +436 names, the others none; for own pairs category 3 the part's +452 (one texture), category 5 `CameraPasses::RenderTarget(0)` (one texture), else +456 (with +432) or +460 (first id +436's) for every sampler, else the XPR list's; with their sampler states; sampler 6's environment texture (`[0x8296DD50]` or XPR list slot 6) and states 16, 20, 36 when bit 4 of +104, an own pair or category 1, 2, 7, 9, 10; the draw (12, 18); command 36. Returns the header slot. A 288-byte frame as the original's. |
+| `sub_820CE7B8` | `Model::SetVinylTextures` | Overridden | r4, r5 to the part's +444 and +448. |
+| `sub_820D5B70` | `CarModel::LoadExterior` | Overridden | The 3,696-byte set-up copied to +32, a new vinyl sheet (`Texture::Create`, A8R8G8B8 at the size at `0x825F2520`, into +6684, +6688), the team emblem into sticker group 7's first record (kind 9) for blocks 18 and up, set a or b by `[[+7256] + 8]`, then `LoadDecals`. |
+| `sub_820D5680` | `CarModel::LoadSetA` | Overridden | Node file 892 + 226 x block and body XPR2 890 + 226 x block, each into pages of its own (`CarModel::AllocPages`); a size of 0 isn't loaded (the body's slot then empty). |
+| `sub_820D5768` | `CarModel::LoadSetB` | Overridden | Node file 11062 + 197 x block through `LoadSlot::Load`, body XPR2 11060 + 197 x block into the shared buffer (no size check). |
+| `sub_820D57F8` | `CarModel::LoadDecals` | Overridden | The six vinyl layers (record layers 0-5; id + 162 for 0-2, + 188 for 3-5) into +4092, then the 48 stickers from the last (groups of six: record layers 18, 12, 24, 30, 48, 42, 36, 6; id + 382, or the id itself for kind 9) into +4380, through `LoadShared`; a negative index leaves the slot empty. +4088 = 2, or 3 when nothing was asked for. Returns 1. |
+| `sub_820D53F8` | `CarModel::OnDecalLoaded` | Overridden | The request's slot (a layer's, else a sticker's) marked arrived, `Vinyl::DrawDecals`, the slot reset; once no decal slot (either of a record's two) is loading, `Vinyl::ClearCorner` and `Vinyl::Compress`, +4088 = 3. |
+| `sub_820D5C30` | `CarModel::SetVinylTextures` | Overridden | r3 a cockpit body: its six part models (+688) given its car model's sheet (`Model::SetVinylTextures` with +6684, +6692). |
+| `sub_820D0620` | `LoadSlot::LoadShared` | Overridden | The same into the car scene's shared load buffer (`[0x826B2B24]` +5008, its size +5012) when the asset is smaller than it, else state 1 (empty). |
+| `sub_820D0588` | `LoadSlot::Load` | Overridden | r4 the asset id, r5 the context, r6 the callback: into its own pages (VirtualAlloc of the asset's size); state 2 and 1, or state 1 (empty) and 0 for a size of 0. |
+| `sub_820D7660` | `CarInterior::Load` | Overridden | The 120-byte set-up copied to +28; for set b the parts (11060/197/190, or set c's 19925/55/49 under a cockpit) then the accessories' slot 1 with the record's accessory and +116; for set a (890/226/219 or set c's) then slot 1 for 0 to 2, each answer's +808 = 0. |
+| `sub_820D73E0` | `CarInterior::LoadParts` | Overridden | Six ids from r4 + block x r5 + r6 into +160 through `LoadShared` (callback `0x820D7228`). |
+| `sub_820E6CA8` | `SceneWheels::SetUp` | Overridden | The 156-byte record copied to +32; the defaults row (44 bytes at `0x82004490`, by the block, or 45 + `[[+16776]]` for a traffic record of kind 3) into +112 to +152 (+120, the caliper texture, only when the record's +100 is 0); copied back to r4; `Wheels::BlockDefault` for blocks 18 and up with both wheel numbers -1; +148, +152 = the number isn't 190 when not negative; pool 5 of `[0x826B2B20]` claimed and got, +28 it, its +24 the car model (or +3264 the traffic record), `ScenePools::SetUp`. A record with +100 set and no car model runs the original (it reads the block through 0). |
 | `sub_820D3620` | `Wheels::BlockDefault` | Wrapped | r3 a model block (18-44), r4 and r5 the front and rear wheel numbers: sets them to a fixed wheel per block (AD00 for the four cut cars, TA03 for BOSS00, wheel 18 for CON_X). The ECLI keeps -1 (its own stock wheel), and the L86, S30 and T86 get the BOSS00's wheel, or -1 with `--cut_car_steelies` (`src/hooks/cut_car_wheels.cpp`, `--cut_car_wheels`). |
-| `sub_820D8DD8` | `Wheels::Setup` |  | r3 the car model: clears +28 (156 bytes), then picks the wheel models with `sub_820D8860` if the word at +8 of `[r3+3268]` is 0, else `sub_820D8900` (`docs/game_data.md`, "Wheels"). |
-| `sub_820D8860` | `Wheels::PickRims` | Wrapped | Front and rear wheel XPR2 (+2144, +2168) and rim part (+1168, +1192) from the wheel numbers at +44 and +60 (-1 stock: wheel = model block if <= 19, else AD00). With `--cut_car_steelies`, the L86, S30 and T86's stock wheel becomes the LORRY's after it (`src/hooks/cut_car_wheels.cpp`). |
-| `sub_820D8900` | `Wheels::PickBrakes` | Wrapped | The same with the brake part (588 + 3i) at +1168 and +1192; traffic (+28 = 3) uses wheel 20 + `[[r3+3264]]`. Wrapped like `sub_820D8860`. |
-| `sub_820D6498` | `CarInterior::LoadSetCBody` |  | Set c: node file 19927 + 55 x car, body XPR2 19925 + 55 x car (shared load buffer), and six exterior parts picked by the tuning choices. |
-| `sub_820D3D18` | `Vinyl::DrawDecals` |  | Decodes each loaded vinyl and sticker (`TGA::CreateImage`) and draws it into the vinyl sheet (`Vinyl::DrawDecal`); a 1024 x 1024 vinyl is drawn as the whole sheet. |
-| `sub_820EE4A8` | `Vinyl::DrawDecal` |  | r3 the region (table at `0x825F2A00`), f1 the rotation, r5-r9 the image and the transform: a quad the TGA's pixel size, drawn on the CPU. |
-| `sub_820D3920` | `Vinyl::ClearCorner` |  | Clears the 16 x 16 block at the sheet's bottom-left (sizes from `0x825F2520`). |
-| `sub_820ECCC8` | `Vinyl::Compress` |  | Compresses the A8R8G8B8 sheet into a new DXT5 texture (`0x1A200054`) and frees the canvas. |
-| `sub_820ECB40` | `Texture::Create` |  | r3 a D3D format, r4/r5 the size: a texture and its pixels. |
-| `sub_820ECC58` | `TGA::CreateImage` |  | r3 a 20-byte image descriptor (out), r4 the file size, r5 a pointer to the file, r6 the pixels (out): `TGA::Parse`, then `TGA::ToARGB`. |
-| `sub_820EE8E8` | `TGA::Parse` |  | `TGA::ParseHeader`, then `TGA::Decode`. |
-| `sub_820EEA68` | `TGA::ParseHeader` |  | Copies the 18-byte header, swapping the 16-bit fields from little-endian (width at +14, height +16, bits per pixel +18). |
-| `sub_820EEFD8` | `TGA::Decode` |  | 24 or 32 bits per pixel only; type 2 copied from byte 18, type 10 through `TGA::DecodeRle`, others fail. |
-| `sub_820EEF28` | `TGA::DecodeRle` |  | Run-length decoding (type 10). |
-| `sub_820EED78` | `TGA::ToARGB` |  | Top-down 32-bit ARGB; 24-bit pixels get alpha 255. |
-| `sub_820EDF38` | `SoftRaster::DrawTriangle` |  | CPU triangle setup for the vinyl sheet. |
-| `sub_820EDC70` | `SoftRaster::DrawSpan` |  | One span of a triangle. |
-| `sub_820ED0D0` | `SoftRaster::BlendPixel` |  | Samples the decal and blends it into the sheet: (src x a + dst x (256 - a)) >> 8. |
+| `sub_820D8DD8` | `Wheels::SetUp` | Overridden | The 156-byte record copied to +28, `Wheels::PickSetA` or `Wheels::PickSetB` by the model set (set a's in the parking area with `--parking_area_garage_wheels`, `src/hooks/parking_area_wheels.cpp`; without `--native_car_models` the original runs with the model set at 0 for the call), then for the front and rear the tire (581, or 583 when the record's +116 is set), the part and XPR2 (by their slots' ids) and the caliper (886), through `LoadShared`. |
+| `sub_820D8860` | `Wheels::PickSetA` | Wrapped | Front and rear wheel XPR2 (+2144, +2168) and set a's wheel part (587 + 3i, the detailed rim, nuts and `punch` shapes) at +1168, +1192 from the wheel numbers at +44 and +60 (-1 stock: wheel = model block if <= 19, else AD00). With `--cut_car_steelies`, the L86, S30 and T86's stock wheel becomes the LORRY's after it (`src/hooks/cut_car_wheels.cpp`). |
+| `sub_820D8900` | `Wheels::PickSetB` | Wrapped | The same with set b's wheel part (588 + 3i, the race's simple wheel: `B0`-`B2_12/20`, `B_space`) at +1168 and +1192; traffic (+28 = 3) uses wheel 20 + `[[r3+3264]]`. Wrapped like `sub_820D8860`. |
+| `sub_82225548` | `ParkingArea::SetUpScene` | Wrapped | The parking area's course scenery (`Scenery::Create`) and car scene: `CarScene::SetUp` with set b (1) and seven car models, as the race's. `--parking_area_garage_wheels` is taken here for the scene (`src/hooks/parking_area_wheels.cpp`). |
+| `sub_8215A250` | `Race::SetUpCarScene` | Wrapped | The race's car scene: `CarScene::SetUp` with set b (1). The parking area's garage wheels are turned off for the scene. |
+| `sub_8217E9F0` | `GarageStage::SetUpCarScene` | Wrapped | The garage stage's car scene: `CarScene::SetUp` with set a (0). The parking area's garage wheels are turned off for the scene. |
+| `sub_820E8250` | `WheelPoints::SetUp` | Wrapped | r3 the points' links: the tires, both calipers and, by the car scene's +4 (the model set), the loaded wheel part linked to `rims_a` (set a's shape names at `0x825F2964`) or `rims_b` (set b's at `0x825F2980`). Run with the car scene's +4 at 0 in the parking area with `--parking_area_garage_wheels`. |
+| `sub_820ECA60` | `SceneWheels::Draw` | Wrapped | r3 the scene wheels: `sub_820EC7A0` when its +40 is set, else `sub_820EC668`; both step the calipers, tires and, by the car scene's +4, `rims_a` or `rims_b`. Run with the car scene's +4 at 0 in the parking area with `--parking_area_garage_wheels`. |
+| `sub_820D6498` | `CarInterior::LoadSetCBody` | Overridden | The 144-byte set-up copied to +28; node file 19927 + 55 x block (`LoadSlot::Load`, +176), body 19925 + 55 x block into the shared buffer (+400), six parts by the record's choices (body id + choice + 3, 16, 19, 31, 36; the cabin + 35) into +536. The original's message for an empty node file, formatted into its frame and read by nothing, is left out. |
+| `sub_820D3D18` | `Vinyl::DrawDecals` | Overridden | Each arrived layer and sticker (state not 0, 1, 2): decoded (`TGA::CreateImage`), its file released, drawn (`DrawDecal`: a 1,024 x 1,024 layer as region 9 at scale 1; layers 0-2 into layer 0's kind's region; 3-5 into regions 1 and 2; stickers into their record's region, mirrored by it), its pixels freed; DrawDecal's arguments in a 368-byte frame as the original's. A decal whose region is past 9 runs the original. Returns 1. |
+| `sub_820EE4A8` | `Vinyl::DrawDecal` | Overridden | r3 the region (table `0x825F2A00`; past 9 the original), r4 mirrored, r5 to r7 the TGA header by value, r8, r9 the offset, f1 the angle; the caller's +96 the scale, +116 the pixels, +132 the sheet's data: the decal's corners through `DecalCorner` (center the decal's, offset less the center plus half the region), texels the decal's corners (left and right swapped when mirrored), two triangles into the region (the sheet's pitch `[0x825F2520]` x 4), in a 400-byte frame as the original's. |
+| `sub_820D3920` | `Vinyl::ClearCorner` | Overridden | The sheet's bottom-left corner (sizes at `0x825F2520`, read from memory) cleared row by row. |
+| `sub_820ECCC8` | `Vinyl::Compress` | Overridden | A DXT5 texture (`0x1A200054`) the sheet's size; both surfaces locked (the sheet's read-only) and described; `XGCompressSurface` (its arguments past r10 in a 272-byte frame as the original's: the source format, no rect, flags 1; f1 0.0); unlocked, released; the old sheet freed (`Texture::Free`) and the new texture in its place. |
+| `sub_820ECB40` | `Texture::Create` | Overridden | A 52-byte header (VirtualAlloc, cleared), `XGSetTextureHeader` (1 level, usage 2; its stack arguments in a 160-byte frame as the original's), the data (`XPhysicalAlloc(size, -1, 0, 0x404)`, cleared), `Resource::Relocate`. Returns 1. |
+| `sub_820ECC58` | `TGA::CreateImage` | Overridden | A reader in a 208-byte frame (as the original's): constructed, loaded, `TGA::ToARGB`, its header copied out, destroyed with the file kept. Returns 1. |
+| `sub_820EE8E8` | `TGAReader::Load` | Overridden | 5 while it holds a file; else the size and file kept, `TGA::ParseHeader`, `TGA::Decode`. |
+| `sub_820EEA68` | `TGA::ParseHeader` | Overridden | The file's 18-byte header, its 16-bit fields little-endian. Returns 0. |
+| `sub_820EEFD8` | `TGA::Decode` | Overridden | 24 or 32 bits only (else 4); the pixels allocated (w x h x 3 or 4) before the type is checked; type 2 copied from byte 18, type 10 `TGA::DecodeRle`, others `OutputDebugStringA` and 4. |
+| `sub_820EEF28` | `TGA::DecodeRle` | Overridden | Type 10: a count byte, bit 7 set one pixel repeated count + 1 times, else count + 1 raw pixels (3 or 4 bytes by the header's depth), until the pixels decoded reach width x height - 1 (a 1-pixel image decodes nothing). Its two packet helpers (`sub_820EEC18`, `sub_820EECC8`, only called from it) are done in line. Returns 0. |
+| `sub_820EED78` | `TGA::ToARGB` | Overridden | New pages of top-down ARGB words from the bottom-up rows; 24-bit pixels get alpha 255. |
+| `sub_820EDF38` | `SoftRaster::DrawTriangle` | Overridden | The vertices sorted by y (ties keep their order), rows from int(y + 0.5); the long edge's split at the middle row; each row's ends at i / n (fused as the original), their texels at (i + 0.5) / n corrected to the end pixels' centers, then `DrawSpan` with the texel-centers flag. |
+| `sub_820EDC70` | `SoftRaster::DrawSpan` | Overridden | One row: the ends in either order (the right one left out), the texels 0.5 less with the flags' top bit (the caller's stack +84), clipped at the left and right with the texels moved along, each pixel's texel at i / n (`BlendPixel`). |
+| `sub_820ED0D0` | `SoftRaster::BlendPixel` | Overridden | r3 the image, r4 where the canvas' address is, r5 the region (+8 pitch), r6, r7 the pixel, r8 the texel's two floats: the texel sampled (`SampleTexel`), skipped at alpha 0, else mixed over the canvas pixel by its alpha out of 256 (red and blue each product shifted down first, alpha and green together). Returns the texel. |
 | `sub_8218C240` | `PostRace::Check` | Overridden | Post-race check: once loaded (+9608), waits for a counter (global at `0x826C7EC4`) to reach 60 before setting the next state at +9604. The 60 is 1 here (`src/hooks/post_race.cpp`, `--post_race_check_fix`): with 60, the screen stays black after quest races on fast hardware. It's also the garage top's load step, run on every entry to the garage (`docs/menus.md`); r3 is the garage top's handler object, which autosave notes. |
 
 ## Font
@@ -306,16 +355,16 @@ vertex shader +8372, a pixel shader per channel at +8376.
 
 | Address | Name | Status | Notes |
 |---|---|---|---|
-| `sub_821089D8` | `Font::CreateShaders` |  | Compiles the font's HLSL (vertex shader source at `[0x825F32C0]`, a pixel shader per channel from the table at `0x826B58E4`) through `sub_822B3678`. |
+| `sub_821089D8` | `Font::CreateShaders` | Overridden | The vertex declaration from the elements at 0x825F3280 (+8368); the vertex shader compiled from `[0x825F32C0]` (`main`, `vs_3_0`, flags 0) and made (+8372); the four pixel shaders from the sources at 0x826B58E4 (`ps_2_0`) (+8376..). Each compile's buffer: slot 3 for the code, slot 2 released. D3DXCompileShader's stack arguments at the 160-byte frame's +84 (errors out, +100) and +92 (0); the buffer out +96.|replaces `sub_821089D8` |
 | `sub_82109280` | `Font::LoadSheet` | Wrapped | r4 the container, r6 the description it fills: +0 the glyph table's header, +4 its entries, +8 the XPR, +12 the texture, +16/+20 the texture's width and height (`sub_822A3160`, level 0), +24 1. Reached only through a pointer. The wrapper puts 576 x 928 there for a sheet that is an exact multiple of that size, so a larger sheet maps like the original (`src/hooks/font.cpp`). |
 | `sub_822A3160` | `Texture::GetLevelDesc` |  | r3 the texture, r4 the level, r5 the description: width at +24, height at +28. |
-| `sub_8210A530` | `Font::DrawText` |  | r5 the text (UTF-16): sets the description from the style's +60 and draws (`sub_8210A020`); again with +108 when the style's +112 is set. |
-| `sub_8210A020` | `Font::BuildText` |  | Counts the glyphs per channel (`sub_82108330`), lays them out (`sub_82109EB0` or `sub_82109BD0`) and records a draw per channel with that channel's pixel shader. |
-| `sub_82108330` | `Font::CountGlyphs` |  | Counts the text's glyphs in each channel (low 2 bits of the entry's second word), skipping spaces, line breaks and color codes. |
-| `sub_82109BD0` | `Font::LayOutText` |  | Lays out a line at a time: each glyph's pen moves by (advance >> 2) times the style's +36, then +8256 and the style's +28. Handles line breaks and the color codes (`FFD6`, `FFF6`-`FFFF`). |
+| `sub_8210A530` | `Font::Draw` | Overridden | r4 the style, r5 the text: Font::SetParams, the page from the style's +60, Font::DrawPass (recompiled) pass 0; with the style's +112, again on the page at +108, pass 1.|replaces `sub_8210A530` (`Font::DrawText`) |
+| `sub_8210A020` | `Font::DrawPass` | Overridden | r4 the text, r5 the pass: nothing for no text or no glyphs (Font::CountGlyphs); one chunk on the command list: a first slot (kind 5), SetTexture (the page's), render states 60 1, 72 6, 76 7, 308 0, 56 0, the scissor (31, the clip rectangle as halfwords) or 200 0, sampler 0's states 24 2, 20 1, 16 1, the vertex declaration (10) and shader (8), each channel's vertices inline (21, 144 bytes a glyph, CommandList::AllocateBytes), the glyphs (BuildVertices, or `sub_82109EB0` for pass 1), each channel's pixel shader (9) and DrawPrimitiveUP (19: triangle list, 6 a glyph, stride 24), 308 1, 36; then the render queue's slot 4 with the first slot, the style's +116 + 1 and f1 0.0 (-1000.0 for pass 1).|replaces `sub_8210A020` (`Font::BuildText`) |
+| `sub_82108330` | `Font::CountGlyphs` | Overridden | r4 four counts, r5 the text: each character but spaces, `\n` and color codes counted in its glyph's channel (page breaks too). Returns the length.|replaces `sub_82108330` |
+| `sub_82109BD0` | `Font::BuildVertices` | Overridden | r4 the text: the lines counted (to a page break), each line from Font::LineX and LineY; every character to the end: a space moves x on, `\n` starts the next line, 0xFFD6 the style's color, 0xFFF6-0xFFFF the font's colors (+8336), others Font::AddGlyph (and the second pass's point at +64 + 8i); x on by (advance + spacing) × the scale. A turned text calls `sub_82109910` first. Returns 0.|replaces `sub_82109BD0` (`Font::LayOutText`) |
 | `sub_82109EB0` | `Font::LayOutPositioned` |  | Like `Font::LayOutText` with each glyph's position taken from the font's table at +64. |
-| `sub_82109680` | `Font::AddGlyph` |  | r6 the character, r7 the color, f1/f2 the pen: six vertices (x, y, z, color, u, v; 24 bytes) into its channel's buffer, the texture coordinates from the index, the cell size and the description's +16/+20 (`docs/game_data.md`, "Font"). Clips through `sub_82108DB0` or `sub_82109088`. |
-| `sub_82108DB0` | `Font::ClipGlyph` |  | Clips a glyph's quad to the style's rectangle (+44 to +56), moving the texture coordinates by the same amount in texels of the description's +16/+20. 0 when nothing is left. |
+| `sub_82109680` | `Font::AddGlyph` | Overridden | r6 the character, r7 the color, f1/f2 the top left: six vertices at its channel's write pointer (0x826B58BC), the cell's place in the sheet (columns = sheet width / cell width) as u, v; clipped (kept: the pointer on 144 bytes; dropped: its count down) or, turned, each vertex through `sub_82109088` (recompiled). A cell width of 0 runs the original.|replaces `sub_82109680` |
+| `sub_82108DB0` | `Font::ClipGlyph` | Overridden | r4 a glyph's six vertices: 1 with no clip rectangle; 0 when wholly outside; else each vertex outside moved to the edge, its u or v by the same distance / the scale / the sheet's size.|replaces `sub_82108DB0` |
 
 ## Fixed time step
 
@@ -505,19 +554,27 @@ and `--subtick_input_sensitivity`; everything else here is always on with `--sub
   from them, several times a Draw. On pass 0 in a race each call is matched
   by its order within the pass; the logic pass records what each is given,
   and on every pass a call given exactly the tick's values builds from the
-  blend. Calls given other values are left alone. A cut isn't blended: the
-  eye or the target breaking from its motion, its move this tick differing
-  from its move the tick before by over 1 m or over half that move (the
-  view button: cockpit, dash, chase; a demo camera change; a menu camera
-  jumping). A camera moving fast but smoothly (the demo's fly-bys) isn't
-  cut. The tick after a cut has no move to compare and isn't tested.
-  Distance tests were tried first (2026-11-11: over 8 m, and a 2 m change of
-  the eye against the target, which worked in races but broke the demo's
-  fast cameras). John's test: about as good as the 8 m test for the demo's
-  cuts, but the garage's and the view button's switches are still blended
-  (their moves stay under the limits). Tabled; cutting on those switches'
-  own code is what's left (the function documented as running on a camera
-  switch, `sub_8213BEB8`, resets an AI path's history instead). The blend stays in the pass for the rest of the frame and the
+  blend. Calls given other values are left alone. A cut isn't blended:
+  - **The game's own switches** (`src/subtick/camera_cuts.cpp`,
+    `--subtick_camera_cuts`): `RaceCamera::SetMode` (every call starts the
+    mode's camera again: the view button, the race start, a restore, the
+    intros' ends), the chase camera's reset (its +380 set when its update
+    runs), a TV camera change (the zone +360 or the kind +448 of the TV
+    cameras changed by their update), and a scripted camera's shot change
+    (its shot +360 or animation +352 changed, or a camera picked with
+    `sub_82153BE0`/`sub_82153CA8`; reported at its next update, which is
+    when the new shot's first frame is written). Each switch is counted;
+    every camera pass's pose takes a new count as a cut at its next record,
+    so a pass updated before the switch in its tick is cut on the tick its
+    new values show (`CarTransforms_GameCameraCut`).
+  - Not reported yet: mode 3 and the garage's presets (blended across
+    their switches). A motion test (the eye or the target breaking from its
+    motion) was the fallback until 2026-11-18; dropped: it cut where nothing
+    switched (unpausing at speed made the car jitter for a tick) and didn't
+    catch the garage's switches.
+  - `--log_camera_cuts` logs each cut and what made it.
+
+  The blend stays in the pass for the rest of the frame and the
   tick's values go back when the next pass starts
   (`CarTransforms_EndFrame`, before any game logic). The draw reads the eye
   and target besides the view: the camera position the cars' paint
@@ -750,6 +807,28 @@ every class with a word at that offset), so they're named by offset.
 | `sub_820CB9A0` |  | Overridden | Aero part getter for BUILD 81: r3 the output (left in r3), r4 the parts (9 pointers), r5 the level; copies the record and swaps the copy. Called from `Car::ApplyAero`. |
 | `sub_820CBA30` |  | Overridden | Aero part getter for BUILD 82: r3 the output (left in r3), r4 the parts (9 pointers), r5 the level; copies the record and swaps the copy. Called from `Car::ApplyAero`. |
 | `sub_820CBAC0` |  | Overridden | r3 the parts: how many of BUILD 81's first two records (the body kits) have a first float other than 0.0. |
+| `sub_820C94F0` | `CarSpec::SwapVector` | Overridden | Three words swapped, the fourth set to 1.0. |
+| `sub_820C9700` | `Params::Init` | Overridden | The parameter object (operator new, 468 bytes) into [0x826B2B28], no wheel model yet (-1s), then two passes over BUILD 72-83: their sizes (TOC), the block (operator new[] of the total), each table's place in it; the loads pending counted. |
+| `sub_820C9B30` | `Params::Free` | Overridden | The block (operator delete[]) and the object (operator delete) freed, [0x826B2B28] = 0. |
+| `sub_820C9CB0` | `CarSpec::SwapMatrix` | Overridden | 16 words swapped. |
+| `sub_820C9F38` | `CarSpec::SwapBlock1At368` | Overridden | Block 1 +368: 40 words (the gear ratios among them). |
+| `sub_820CA098` | `CarSpec::SwapBlock1At264` | Overridden | Block 1 +264: two runs of three words and 15 words; r3 its +16. |
+| `sub_820CA220` | `CarSpec::Swap3` | Overridden | 3 words swapped. |
+| `sub_820CA2A0` | `CarSpec::SwapBlock1` | Overridden | Block 1's swap (five vectors with w = 1.0, two 16-word runs, the words from +224); r3 block 1 + 368. |
+| `sub_820CA780` | `EngineStage::Swap` | Overridden | A 204-byte engine stage's words from +8 swapped. |
+| `sub_820CAA48` | `Tire::Swap` | Overridden | A 92-byte tire's floats from +8 swapped. |
+| `sub_820CACC0` | `CarSpec::SwapBlock2At8` | Overridden | Block 2 +8: five words and +56 swapped, the nine floats between set to 0.0. |
+| `sub_820CAD90` | `CarSpec::Swap5` | Overridden | 5 words swapped. |
+| `sub_820CAE60` | `CarSpec::SwapBlock2At132` | Overridden | Block 2 +132: 42 words swapped. |
+| `sub_820CB150` | `CarSpec::Swap4` | Overridden | 4 words swapped. |
+| `sub_820CB2D0` | `Wheel::SwapColor` | Overridden | A wheel's 12-byte color record: two halfwords and a word. |
+| `sub_820CB328` | `Wheel::Swap` | Overridden | A 48-byte wheel record: its two colors and four words; r3 the second color. |
+| `sub_820CB3F8` | `Params::SwapTable83Record` | Overridden | 10 words of a BUILD 83 record swapped. |
+| `sub_820CB588` | `AeroPart::Swap36` | Overridden | `AeroPart::Swap`, then the words at +28 and +32 (BUILD 81 and 82). |
+| `sub_820CBBB0` | `Params::SwapWheels` | Overridden | `Wheel::Swap` on each wheel record (+60 of them). |
+| `sub_820CBC10` | `CarSpec::SwapBlock2` | Overridden | Block 2's swap (its bytes and model name kept); r3 block 2 + 300. |
+| `sub_820CBF08` | `CarSpec::Swap` | Overridden | A spec's byte swap: block 1, block 2, 16 engine stages, 21 front and rear tires, the paints, the stock wheel; r3 the stock wheel's second color. |
+| `sub_820CBF90` | `Params::SwapCarSpecs` | Overridden | `CarSpec::Swap` on each of the specs (count at +56). |
 
 ### `native_menu_helpers`
 
@@ -785,6 +864,7 @@ every class with a word at that offset), so they're named by offset.
 | `sub_82117318` | `DataTables::Find20` | Overridden | The index of the first matching entry in asset 95's table, or -1. |
 | `sub_82117378` |  | Overridden | Entry lookup in the 20-byte table (Entry20) or the 40-byte table (Entry40). |
 | `sub_82117390` |  | Overridden | Entry lookup in the 20-byte table (Entry20) or the 40-byte table (Entry40). |
+| `sub_820C9578` | `SwapWord` | Overridden | r3's word's four bytes reversed in place (the 360's lfs/stfs round trip, signaling NaNs unchanged). |
 
 ### `native_file_layer`
 
@@ -801,6 +881,15 @@ every class with a word at that offset), so they're named by offset.
 | `sub_820A6B98` | `GamePath::GamePath` | Overridden | Constructor, also used as its destructor. |
 | `sub_82579250` | `Path::Build` | Overridden | Builds a path from the path (r3), the kind (r4) and the name (r5). |
 | `sub_820A6BA8` | `GamePath::SetGame` | Overridden | Sets the game's folder name in the path; a name of 0 isn't checked for. |
+| `sub_820A6A08` | `GameFile::OpenWrite` | Overridden | By name: the name made a plain path (a Path in its 640-byte frame), File::OpenWrite (`sub_82572140`) on it; 1 when it opened. |
+| `sub_820A6AD8` | `GameFile::OpenAsync` | Overridden | As OpenWrite, with AsyncFile's open (`sub_825790C0`). |
+| `sub_820A6B40` | `GameFile` deleting destructor | Overridden | The destructor, then operator delete with bit 0 of r4; returns r3. |
+| `sub_820A6C20` | `GamePath::Set` | Overridden | As SetGame with the second plain path kind (1). |
+| `sub_820A6C98` | `GamePath` deleting destructor | Overridden | As Path's, with GamePath's vtable. |
+| `sub_82579160` | `AsyncFile::Detach` | Overridden | Returns the handle (+4) and sets it to -1, without closing it. |
+| `sub_82579178` | `AsyncFile` deleting destructor | Overridden | As GameFile's. |
+| `sub_825791F0` | `Path::Text` | Overridden | Returns r3 + 4, the text. |
+| `sub_82579208` | `Path` deleting destructor | Overridden | The vtable written again, then operator delete with bit 0 of r4. |
 
 ### `native_track_zones`
 
@@ -902,6 +991,24 @@ The scene models' records and links, on the record types in `game/scene_loads.h`
 | `sub_820E3E20` | `SceneInterior::Apply` | Overridden | r4 (120 bytes) copied to +40 and the cockpit's +28, the six lights' +452, then sub_820E3500. |
 | `sub_820D9A10` | `SceneModel::ReloadDecals` | Overridden | With +5036 set (not kind 3): the car record set from +48 and the decals rebuilt. |
 | `sub_820D9AC8` | `SceneModel::AddSecondWheels` | Overridden | Once (+5032): the scene's pool 5 entry made and linked; 1, or 0 when done before. |
+| `sub_820C58E0` | `ScenePools::SetUpB` | Overridden | The car scene's pool r4 object r5 (List::At on +4896 + 12 x pool); 0 unless in use (+16 = 3); set up from r6 by the pool (0 to 7; the wheels' set-up a guest call). Returns the object. |
+| `sub_820D6668` | `Pool4Object::OnLoaded` | Overridden | When its slot's request is r3: Model::Load of r4 into +112, the buffer released, state 3. |
+| `sub_820D67F8` | `Pool4Object::Load` | Overridden | The record to +28 (52); asset 1115 + 226 x block (set A) or 11256 + 197 x block into the slot at +80 (OnLoaded). |
+| `sub_820D68C0` | `CarParts::OnPartLoadedA` | Overridden | Archive::Load's callback (r3 the request, r6 the parts): the matching slot of 216's model loaded, its buffer released, state 3. |
+| `sub_820D6938` | `CarParts::OnPartLoadedB` | Overridden | As OnPartLoadedA over 17 slots. |
+| `sub_820D6D40` | `CarParts::LoadSetA` | Overridden | Each of 216 slots loads asset 893 + 226 x block + i (LoadSlot::LoadShared, OnPartLoadedA). |
+| `sub_820D9538` | `SceneModel::Build` | Overridden | Traffic: no car model (-1), no cockpit, its body (pool 6) and wheels. Others: car model, parts, interior, lights, wheels; a cockpit for kind 2 in a scene with cockpits (its record from the parts words, +5 and +7 adjusted), else +5080 = 1. |
+| `sub_820DA420` | `SceneModel::ApplyRecord` | Overridden | Once SceneModel::LoadsDone (`sub_820D9FE0`): block 5's choice; the car record to the car model; scene +4 0: the parts and interior applied in place; else new ones made and the old released. Kind 2 in a cockpit scene: the cockpit made again. |
+| `sub_820DB0C8` | `SceneModel::SetUp` | Overridden | +5024 = 1, the record copied, the wheels record's kind; block 5's interior choice; +4916 = 0.3 or 0.1 by the scene's +4; in a race scene outside mode 5 ([0x825F3264]) its slot's (+20) engine sounds cleared and loaded (0x826062A0's ids by block and variant); then built now, or held (+5040) while +5044 counts. |
+| `sub_820DB488` | `SceneCarModel::SetUp` | Overridden | +3728 = the car scene; CarRecord::Copy to +32; the first set's pool 0 claimed and set up from it into +24. |
+| `sub_820DBAF0` | `SceneCockpit::SetUp` | Overridden | The record to +36 (144); the first set's cockpit body (pool 2) into +32 and set up; its interior (car scene pool 3) into +28, marked the cockpit's (+11656, +11612), linked, its +28 and +32 the body's +208 and +496; SetUpB of it with +60. |
+| `sub_820DC718` | `ScenePool4::SetUp` | Overridden | As SceneParts::SetUp with pool 4: the record (52) to +32, the object in +28. |
+| `sub_820DEF98` | `SceneParts::SetUp` | Overridden | The record to +108 (memcpy, 60); the first set's pool 1 claimed into +104, given the car model, set up from +108. |
+| `sub_820E33B8` | `SceneInterior::SetUp` | Overridden | +11668 = the car scene; the record to +40 (120); the first set's pool 3 into +36 (its +3088 = 1 for a cockpit's), given the car model, set up. |
+| `sub_820E5588` | `SceneTraffic::SetUp` | Overridden | +9796 = the car scene; the record to +32 (3,696); the first set's pool 6 into +9760, set up from the caller's record. |
+| `sub_820D6DA0` | `CarParts::LoadSetB` | Overridden | Set B's 17 slots from +96: asset 11060 + 197 x block plus, by slot, a parts record word and an offset (slot 1 7 x word 0 + word 1 + 16; 13 and 16 fixed; 7, 9 and 14 none; 4 none when its word is 13), each through LoadSlot::LoadShared with OnPartLoadedB. |
+| `sub_820D71C0` | `CarParts::Load` | Overridden | The 60-byte record copied (memcpy) to +28; then by the pools' model set ([+106000] +8): 0 CarParts::LoadSetA, 1 LoadSetB, others nothing. |
+| `sub_820D86C0` | `TrafficCar::Load` | Overridden | CarRecord::Copy to +32; +7392 = the first set; LoadSlot::Load of asset 22528 + the car's number into the node slot (+3744, TrafficCar::OnFileLoaded); on failure the error sprintf'd into a buffer on its 1,136-byte frame; then a 16 x 16 A8R8G8B8 Texture::Create into the release words +3728 and +3732. |
 
 ### `native_save_data`
 
@@ -927,6 +1034,10 @@ The save data's defaults, on `SaveData` and its parts (`game/save_data.h`); a me
 | `sub_820CCA80` | `Defaults::Table3E34` | Overridden | 0x826B3B14. |
 | `sub_820CCA90` | `Defaults::Table3C24` | Overridden | 0x826B3904. |
 | `sub_820CCAA0` | `Defaults::Table50E4` | Overridden | 0x826B4DC4. |
+| `sub_821057E8` | `SaveData::TwoPlayerBlock` | Overridden | Slot 1's word. |
+| `sub_821057F8` | `SaveData::Teardown` | Overridden | The input recordings, the replay and the race data freed, save 0 deleted, the data tables freed. Never runs in play. |
+| `sub_821058B0` | `SaveData::CreateTwoPlayerBlock` | Overridden | The two-player block (240,100 bytes: two players' save data up to their course records, one set of options) made into slot 1 (0x826B583C), both stats made, Progress::SetDefaults on each half and the options' defaults. |
+| `sub_82105D88` | `CourseRecords::Of` | Overridden | r3 + 20 + 408 x (course x 2 + traffic), r4 the pair. |
 
 ### `native_accessories`
 
@@ -972,6 +1083,23 @@ The string table at [0x826B5914] (2,256 bytes: +0 the 17 files, +68 their loaded
 | `sub_8210A930` | `Strings::Get` | Overridden | r4 the id: its file by the bounds at 0x82007DB0, DataFile::GetEntry of the rest. |
 | `sub_8210A6F0` | `Strings::PageCount` | Overridden | r4 the text: its page breaks (0xFFD1). |
 | `sub_8210A718` | `Strings::CopyPage` | Overridden | r4 out, r5 the text, r6 the page, r7 the lines to skip: the page appended (wcscat). |
+| `sub_821083C0` | `Font::OutCode` | Overridden | r4 a vertex: 1/2/4 left of, right of, across the clip rectangle; 8/16/32 above, below, across.|new |
+| `sub_82108488` | `Font::SetParams` | Overridden | r4 the style: kept at +16; the top left (+56/+60) = the position less (scale - 1) × the scale origin, a whole pixel; the spacings (+8256/+8260) from the style's ints.|new |
+| `sub_82108578` | `Font::LineWidth` | Overridden | r4 a line: as TextWidth for one line (to `\n` or a page break); justified text the plain sum. f1.|new |
+| `sub_82108688` | `Font::LineY` | Overridden | r4 the line count, r5 the line: its y by the vertical alignment in the box (+72); a line is the cell height × the glyph scale (truncated) plus the line spacing; justified text sets the line spacing that fills the box. An unknown alignment leaves f1.|new |
+| `sub_82108930` | `Font::LineGlyphs` | Overridden | r4 a line: the glyphs in it (16-bit; colors not counted). Leaves r10.|new |
+| `sub_82108980` | `XPR::Release` | Overridden | r3 a slot: its XPR destroyed (`sub_8257CA60`), freed (operator delete) and the slot cleared.|new |
+| `sub_82108C50` | `Font::TextWidth` | Overridden | r4 the style, r5 the text: the widest line up to a page break (each glyph's advance × the glyph scale, truncated, plus the letter spacing but for justified text), less the spacing, × the scale; f1. A `\n` counts its own advance.|new |
+| `sub_82109100` | `Font::LineX` | Overridden | r4 a line: its x by the horizontal alignment in the box (+68 × the scale), a whole pixel; justified text sets the letter spacing that fills the box (Font::LineGlyphs). An unknown alignment gives the line's width. f1.|new |
+| `sub_821095B8` | `Font::Load` | Overridden | r4 a mask of pages: added to +12; each page asked for without a file gets a page (operator new, 28 bytes), its file's memory (VirtualAlloc of the asset's size, assets 22654-22657 at 0x82007BF4) and Archive::Load with Font::OnPageLoaded.|new |
+| `sub_82109B28` | `Font::Init` | Overridden | The font (8,400 bytes, VirtualAlloc) into [0x826B58E0], set up by Font::Font (recompiled).|new |
+| `sub_8210A7B0` | `Strings::FormatGrouped` | Overridden | r4 an int, r5 the output (appended): its magnitude with thousands separators, a negative one then the whole output after a '-' ("--2147483648" for the smallest int). The original where its 256-unit buffer would overrun or the output has 0xFFFF.|new |
+| `sub_8210AAC0` | `Strings::FormatV` | Overridden | r4 the output (appended), r5 a string id, r6 a va_list (8-byte slots): the string with 0xFFD7 (an inner string id), 0xFFEC-0xFFF5 (`%Nd`), 0xFFE2-0xFFEB (`%.Nf` of the slot's double as a float), 0xFFD8-0xFFE1 (`%0Nd`), 0xFFD3 (grouped) and 0xFFD2 (`sub_82108B90`) replaced; the numbers by the game's swprintf in a 2,752-byte guest frame (+96 the format, +608 the text). Returns r4.|new |
+| `sub_8210ACF0` | `Strings::Format` | Overridden | As FormatV with the arguments as varargs (r6-r10 stored at the caller's r1 + 40, the va_list), no 0xFFD2; a 2,736-byte frame.|new |
+| `sub_8210AEF8` | `Text::Init` | Overridden | No arguments, once at boot: Font::Init, then Strings::Init.|new |
+| `sub_825BE990` |  | Overridden | A static initializer: the font's four pixel shader sources at 0x826B58E4 (12 bytes each: the HLSL from `[0x825F32C4]`.., its strlen, 0).|new |
+| `sub_82109348` | `Font::Font` | Overridden | +0 the video output (the owner `[0x8265CD68]`'s slot 7, then slot 3), +4 the command list and +8 the render queue (the render manager `[0x826AA880]`'s slot 8, then slots 1 and 2); Device::Lock (its word at the 128-byte frame's +88), Font::CreateShaders, Device::Unlock; the pages (+20) and their files (+40) cleared; the ten colors at +8336 (255 234 0, 44 242 242, 82 240 105, 198 66 14, 0 255 0, 127 127 127, then zeros); +12 = 0. Returns 14.|new |
+| `sub_8210A5C0` | `swprintf` | Overridden | r3 the buffer, r4 the format, r5.. the arguments: r5-r10 stored in the caller's parameter area (+32 to +79, the stack arguments after them) and that handed to vswprintf (`sub_8258F420`) as the va_list, from a 96-byte frame (the va_list kept at +80).|new |
 
 ### `native_game_modes`
 
@@ -1186,7 +1314,7 @@ The race snapshots' copies (`src/game/replay_snapshots.cpp`, types in `src/game/
 
 ### `native_ui_movies`
 
-The UI movies' file lookups, on the types in `game/ui_movies.h`. The movies' text and drawing stay recompiled; `sub_8211D4B8` and `sub_82585C40` keep subtick's overrides, which call ours.
+The UI movies (the XMD/X2D menu and HUD scenes): the file lookups, the update and track apply (`game/ui_movies.cpp`, types in `game/ui_movies.h`); the drawing side: transforms, pictures, primitives, nodes, the text queue, the key curves, the load fix-ups (`game/ui_movie_draw.cpp`); the nodes, textures, text items, animation lists and times, lookups (`game/ui_movie_nodes.cpp`); the text setters, play/move/loop/finish, the movie table, open, load and unload (`game/ui_movie_text.cpp`). Left recompiled: the ticker's step and offset (`sub_8211BB10`, `sub_8211B9D0`: subtick's own), `sub_8211D3D0` and `sub_8211E538` (std::string temporaries from stack bytes they never write). `sub_8211D4B8` and `sub_82585C40` keep subtick's overrides, which call ours; every call to them goes through the override so subtick's wrappers run. DrawPrimitive with more than 16 vertices runs the original (its frame holds 16).
 
 | Address | Name | Status | Notes |
 |---|---|---|---|
@@ -1197,12 +1325,131 @@ The UI movies' file lookups, on the types in `game/ui_movies.h`. The movies' tex
 | `sub_82582CF8` | `VertexOffset` | Overridden | 16 x (r3 + 2 x (r4 + 4)). |
 | `sub_82586358` | `IsXmd` | Overridden | "XMD\0001\0" at r3. |
 | `sub_82586538` | `IsMovieFile` | Overridden | "X2D\0005\0" at r3 + 8. |
-| `sub_8211B988` | `UiMovie::NodeWord24` | Overridden | The node r4's +24, or 0. |
-| `sub_8211BB88` | `UiMovie::NodeWord4` | Overridden | The node r4's +4, or 0. |
+| `sub_8211B988` | `UiMovie::TextFirstLine` | Overridden | A text's first line (the node r4's +24): r3 the movie, r4 the text's id; 0 when the movie hasn't the text. |
+| `sub_8211BB88` | `UiMovie::TextScrolls` | Overridden | Whether a text scrolls (the node r4's +4): r3 the movie, r4 the text's id; 0 when the movie hasn't the text. |
 | `sub_8258BCE8` | `MovieFile::NodeTrackList` | Overridden | The file's table entry r4 (+32 its count). |
 | `sub_8258BD00` | `MovieFile::KeyList` | Overridden | The table entry r4 (+40). |
 | `sub_8258BD18` | `MovieFile::SubAnimation` | Overridden | The table entry r4 (+48). |
 | `sub_825865D0` | `MovieFile::Animation` | Overridden | The table entry r4 (+16). |
+| `sub_8211A078` | `UiNode::CopyFields` | Overridden | r4 a node given r5's fields by r4's tag: the common ones (+12 to +80), then a picture's (+100 to +136), a primitive's (+100 to +108 and each vertex, `sub_82582D20`) or a text's (all but +108, its id, and +112). |
+| `sub_8211A300` | `UiMovie::ResetNodeFields` | Overridden | r4 (a sub-scene or -1) and r5 a node: its fields copied from the file's scene to the live and saved ones (CopyFields), not its subtree. |
+| `sub_8211A3B0` | `UiMovie::ResetNode` | Overridden | The node's common fields copied from the file's scene to the live and saved ones, then each one's subtree put back (`sub_82119D50`). |
+| `sub_8211A748` | `UiMovie::FindNode` | Overridden | r4 a sub-scene's index in the live scene or -1, r5 a child's index: the node (`UiMovie::Child`, `sub_82582D50`, once or twice). |
+| `sub_8211A788` | `UiMovie::SetNodeColor` | Overridden | The node found, its color (+56 to +64) set to entry r6 of the table at 0x820083A0 (r, g, b words). Returns the node. |
+| `sub_8211A800` | `UiMovie::SetColor` | Overridden | The same for node r4, color r5. |
+| `sub_8211A830` | `UiMovie::SetLayer` | Overridden | Node r4's drawing layer (+72) for layer number r5: (n + 62) x 2 up to 11, (n + 290) x 2 up to 665 for 12 to 43, else 665. |
+| `sub_8211A890` | `UiMovie::ClearTextIds` | Overridden | Every `TXT` chunk after the live scene's, up to the `TRM` chunk, loses its text id (+108). |
+| `sub_8211A8D8` | `UiMovie::SetNodeTexture` | Overridden | The node found; r6 its texture entry (a primitive's +104, a picture's +108; other nodes left). Returns the node. |
+| `sub_8211A958` | `MovieWords::Reserve` | Overridden | r3 a word array, r4 a capacity: when new, a new block (operator new[]), the words that fit copied, the old freed. |
+| `sub_8211A9E8` | `TextItem::TextItem` | Overridden | A 128-byte queued text: +0 = 0, an identity transform at +16, +80 to +96 = 0.0. Returns it. |
+| `sub_8211AA98` | `TextItem::~TextItem` | Overridden | +80 = 0.0, +0 = 0, the identity at +16. Leaves r3 at +16. |
+| `sub_8211AB18` | `Quad::Quad` | Overridden | An identity transform at +0, +64 and +68 (the blend) = 0, +72 = 2. Returns it. |
+| `sub_8211ABB8` | `UiMovie::InitAnimationLists` | Overridden | The movie's +0 to +24 and loaded flag (+40912) cleared, its queue and looping lists emptied (`FixedList::Reset`). |
+| `sub_8211AC78` | `UiMovie::SetPictureTexture` | Overridden | The picture found; the movie's texture its entry names (`sub_82582D40`, the entry's first word an index into +28's array) replaced with r6. Returns the old one. |
+| `sub_8211ACF8` | `UiMovie::GetPictureTexture` | Overridden | The same lookup; returns that texture. |
+| `sub_8211AD60` | `UiMovie::SwapTexture` | Overridden | Texture r4 replaced with r5; returns the old one. |
+| `sub_8211AD78` | `UiMovie::ResetPose` | Overridden | The live and saved scenes put back to the file's (`sub_82119D50` twice, nodes 0). |
+| `sub_8211ADD0` | `UiMovie::ShowNode` | Overridden | The node found, +80 (visible) = 1. Returns it. |
+| `sub_8211AE18` | `UiMovie::HideNode` | Overridden | The same, +80 = 0. |
+| `sub_8211AE60` | `UiMovie::FreeTexts` | Overridden | Each text record's 2 KB buffer (VirtualFree, MEM_RELEASE) and the record (operator delete) freed; the text map's count = 0. |
+| `sub_8211AED0` | `UiMovies::Reset` (probably) | Overridden | A screen's start: 0x826B5990 cleared, the UI movies given the render manager's renderer and command list (its slot 8, then slots 2 and 1; `sub_82582E90`), every movie table entry (0x826B59AC) marked free (key -1, no movie; nothing freed), seven words from 0x826B5984 cleared. |
+| `sub_8211AFE8` | `MovieWords::MovieWords` | Overridden | The movie's textures: 512 words (operator new[]), none used. |
+| `sub_8211B038` | `MovieWords::Append` | Overridden | The word at r4 appended, the capacity doubled first when full. |
+| `sub_8211B0A0` | `TextItem::operator=` | Overridden | r4's +0, transform, +80, +84 to +96 and +100 to +112 copied to r3. Returns r3. |
+| `sub_8211B160` | `TextItem::DeletingDestructor` | Overridden | r4 bit 1: an array (its count 16 bytes before), each destroyed last first; else one item. Bit 0: freed (operator delete[] or delete). Returns the block. |
+| `sub_8211B1E8` | `TextList::TextList` | Overridden | 512 text items made in one 65,552-byte block (operator new[], the count in its first word); none when it fails. |
+| `sub_8211B250` | `AnimationList::RemoveAt` | Overridden | The link at position r4 taken out and put first on the free links, count - 1. |
+| `sub_8211B2B8` | `MoviePairs::MoviePairs` | Overridden | The movie table: 64 pairs, cleared (operator new[]; none when it fails). |
+| `sub_8211B330` | `MoviePairs::Reserve` | Overridden | As `MovieWords::Reserve` for 8-byte pairs, the new block cleared. |
+| `sub_8211B400` | `AnimationList::LinkFree` | Overridden | The first free link put in at position r4 (16-bit), count + 1. No check for a full list. |
+| `sub_8211B468` | `AnimationList::Get` | Overridden | The 40-byte slot at position r5 of list r4 copied to r3. Returns r3. |
+| `sub_8211B540` | `TextMap::Set` | Overridden | r3 the text map (128 {id, record} pairs, count +1024): the record for id [r4] set to [r5], or appended (the count stored first: a 129th lands on it). |
+| `sub_8211B5C0` | `UiMovies::Find` | Overridden | r3 the pairs, r4 a key's address: the value's address, or 0x826B59BC. |
+| `sub_8211B628` | `MoviePairs::Append` | Overridden | The pair at r4 appended, the capacity doubled first when full. |
+| `sub_8211B6A0` | `AnimationList::Insert` | Overridden | A free link put in at position r5 (`LinkFree`), slot r4 copied to it. Returns the list's slot. |
+| `sub_8211B710` | `UiMovie::Unload` | Overridden | The file's three copies freed (VirtualFree), the scenes cleared, the texture entries cleared and freed last first, the queued text items taken off, the texture set released (`sub_82108980`), the loaded flag cleared, the texts freed (`sub_8211AE60`). |
+| `sub_8211B830` | `UiMovie::GetText` | Overridden | r4 a text id's address: the id given (the map's count + 1) when 0; its record (`TextMap::Find`), or a new one (operator new, 28 bytes) with a cleared 2 KB buffer (VirtualAlloc). |
+| `sub_8211B8F0` | `UiMovie::TextString` | Overridden | Text r4's buffer, or the empty string at 0x820083C4. |
+| `sub_8211B940` | `UiMovie::TextPage` | Overridden | Text r4's page (+20), or 0. |
+| `sub_8211BBD0` | `UiMovie::AnimationTime` | Overridden | r4 a sub-scene or -1, r5 an animation: f1 its slot's time (+20), looked for in the looping list then the queue; -1.0 when neither has it. |
+| `sub_8211BCE8` | `UiMovie::NamedAnimationTime` | Overridden | The same for named animation r4 (the slot's +8). |
+| `sub_8211BDE8` | `UiMovie::IsNamedActive` | Overridden | 1 when named animation r4 is looping or queued, else 0. |
+| `sub_8211BEE0` | `UiMovie::AssignLayers` | Overridden | r4 the scene, r5 a group (or the scene), r6 a layer, r7 by bucket: the group's children sorted into 64 buckets by their layer offset (+72, at most 63; on the guest stack, a 16,800-byte frame as the original's), then groups and sub-scenes recursed into, pictures, primitives and texts given their layer (`SetLayer`; the bucket's number when r7 is set). From the movie's load. |
+| `sub_8211C068` | `UiMovies::IsLoaded` | Overridden | r3 a movie's id: 1 when its movie (the table at 0x826B59AC, `sub_8211B5C0`) has loaded (+40912). An id not in the table reads the movie word the find gives for none. |
+| `sub_8211C338` | `UiMovieTable::Set` | Overridden | r3 the movie table, r4 and r5 the key's and value's addresses: the value set when the key is there, else the pair appended (`sub_8211B628`) from its frame. |
+| `sub_8211C3C8` | `UiMovie::SetText` | Overridden | r3 the movie, r4 a scene's index or -1, r5 a child's, r6 a string id, r7 on its arguments (stored in the caller's area as a va_list): the text node's text cleared, its page 0, the string formatted into it (`Strings::FormatV`), the text map set. A node that isn't a text runs the original (an endless loop: the game's assert). |
+| `sub_8211C498` | `UiMovie::SetCharText` | Overridden | As SetText with r6 an 8-bit string, converted by the font (`sub_82108B90`); the page kept. |
+| `sub_8211C640` | `UiMovie::ClearText` | Overridden | The looked-up node's text cleared and its scroll restarted (+8 = 0). No text check. |
+| `sub_8211C6C0` | `UiMovie::SetTextScrollSpeed` | Overridden | The looked-up node's text: +12 = r6 (the frames before it scrolls), +16 = f1 (the speed). |
+| `sub_8211C740` | `UiMovie::ScrollText` | Overridden | The looked-up node's text: +4 = r6 (scrolling), +12 = 45, +16 = 4.0 (0x820021B8). |
+| `sub_8211C7C8` | `UiMovie::RestartTextScroll` | Overridden | The looked-up node's text's +8 (frames scrolled) = 0. |
+| `sub_8211C908` | `UiMovie::SetNumberText` | Overridden | The looked-up node's text cleared and a number formatted into it (`Strings::Format`): string 8 for 0, else string 9 with r6 (all 64 bits). |
+| `sub_8211C9B0` | `UiMovie::SetNodeText` | Overridden | SetText with the node given (r4), r5 the string id, r6 on its arguments. |
+| `sub_8211CA68` | `UiMovie::SetNodeCharText` | Overridden | SetCharText with the node given (r4), r5 the string. |
+| `sub_8211CAF8` | `UiMovie::ShowNextPage` | Overridden | r3 the movie, r4 a text node: when the text has a page after the one shown (`Strings::PageCount`), shows it and returns 1, else 0; the text map set either way. |
+| `sub_8211CB88` | `UiMovie::HasNextPage` | Overridden | The same test without the step or the map. |
+| `sub_8211CBE0` | `UiMovie::SetNodeNumberText` | Overridden | SetNumberText with the node given (r4), r5 the number (64 bits). |
+| `sub_8211CC68` | `UiMovie::SetNameText` | Overridden | r3 the movie, r4 a text node, r5 a racer's name record (+4 a kind, +8 an index, +10 a flag; +12, +16, +18 a second part's): kind 5 is one string (6012 + index, 0 to 70); else each part's string (kind 0: 5652 or 5832 + index, 1: 6083 +, 4: 5547 +; second kind 2: 5742 or 5922 +, 3: 6087 +) in string 533, when both have one. Through SetNodeText, the registers after the ones set passed on as they came. |
+| `sub_8211CDA0` | `UiMovie::SetNodeTextV` | Overridden | r3 the movie, r4 a node, r5 a string id, r6 a va_list: the text cleared and the string formatted; no text check, the page kept. |
+| `sub_8211CE18` | `UiMovie::ClearNodeText` | Overridden | r3 the movie, r4 a node: its text cleared (scroll and page kept). |
+| `sub_8211D440` | `UiMovie::Draw` | Overridden | r3 the movie: drawn as its update draws without applying animations: the live scene's pose saved (`sub_82119D50`), laid out (`sub_825850F8`), texts drawn (`sub_8211CF58`), the two draw lists sent (`sub_825831B8` 676, 148). |
+| `sub_8211DA40` | `UiMovie::RevealText` | Overridden | ShowNextPage on the looked-up node (r4, r5). |
+| `sub_8211DA98` | `UiMovie::HasMoreText` | Overridden | HasNextPage on the looked-up node. |
+| `sub_8211DAF0` | `UiMovie::SetChildNameText` | Overridden | SetNameText on the looked-up node, r6 the name record. |
+| `sub_8211DC88` | `UiMovie::PlayNamed` | Overridden | r3 the movie, r4 a named animation's index, r5 to r8 the slot's with-next, backwards, remove-at-end and hold: unless it's looping (r3 then its position there) or r4 is negative, queued at the queue's end (`sub_8211B6A0`) at time 0, or its length when backwards (the word as it is), and copied to the movie's last started (+40920). |
+| `sub_8211DDA0` | `UiMovie::MoveAnimation` | Overridden | r3 the movie, r4 a scene's index or -1, r5 an animation's, r6 nonzero to move it from the queue to the looping list's end, 0 the other way (each slot copied into its frame to test, `sub_8211B468`; taken off, `sub_8211B250`; appended, `sub_8211B6A0`). |
+| `sub_8211DEA8` | `UiMovie::MoveNamedAnimation` | Overridden | The same by a named animation's index (r4), r5 the direction. |
+| `sub_8211DF98` | `UiMovie::Loop` | Overridden | MoveAnimation to the looping list. |
+| `sub_8211DFA8` | `UiMovie::LoopLast` | Overridden | The last started animation looped: by name when it was started by name, else by its scene and index. |
+| `sub_8211DFE8` | `UiMovie::Unloop` | Overridden | MoveAnimation back to the queue. |
+| `sub_8211DFF0` | `UiMovie::UnloopNamed` | Overridden | MoveNamedAnimation back to the queue. |
+| `sub_8211DFF8` | `UiMovie::Finish` | Overridden | r3 the movie, r4 a scene's index or -1, r5 an animation's: moved to the queue, then, when queued, applied at its end (`sub_82585FD8` at its length, or 0 when backwards) and taken off: the scene keeps its end pose. |
+| `sub_8211E1B8` | `UiMovie::FinishAll` | Overridden | r3 the movie: every looping animation moved to the queue's end, then every queued one applied at its end and taken off, first to last. |
+| `sub_8211E320` | `UiMovie::~UiMovie` | Overridden | r3 the movie: its named animations destroyed (`sub_8211D378`), its draw context's destructor (`sub_821611F0`), its text draws' array (`sub_8211B160`, when there is one) and its textures' array (`operator delete[]`) freed. |
+| `sub_8211E418` | `UiMovies::Delete` | Overridden | r3 a movie's id: when the table has a movie for it, unloaded (`sub_8211B710`), destroyed, freed (`operator delete`) and its table value set to 0. |
+| `sub_8211E488` | `UiMovies::DeleteAll` | Overridden | Every movie in the table deleted by its id. |
+| `sub_8211E4D8` | `NamedAnimation::Assign` | Overridden | r3 a named animation, r4 another: its name assigned (`std::string::assign`, all of it), its scene and animation copied. From `sub_8211E538`. |
+| `sub_8211E530` | `UiMovies::DeleteAllJump` | Overridden | A jump to DeleteAll. |
+| `sub_8211E6C0` | `UiMovie::OnLoaded` | Overridden | `Archive::Load`'s callback, r4 the loaded XMD archive, r6 the movie: its X2D file (entry 0, up to its TRM chunk's end) copied into three new buffers (VirtualAlloc), fixed up, their scenes kept (+16 live, +20 saved, +24 the file's); each scene's layers set (`sub_8211BEE0`), the texts' ids cleared and the texts freed, the named animations made (`sub_8211E538`). With more than one entry, entry 1 is a texture set: an XPR made (+12) and each texture appended to +28 with its width and height. The archive freed, +40912 (loaded) = 1. |
+| `sub_8211E958` | `UiMovie::Load` | Overridden | r3 the movie, r4 its file's id: a buffer of the file's size (`Archive::GetSize`, VirtualAlloc) and `Archive::Load` with `UiMovie::OnLoaded` as the callback and the movie as its context. |
+| `sub_8211E9C8` | `UiMovies::Open` | Overridden | r3 a movie's id, r4 its file's id: unless the table has a movie for the id (0), a movie made (40,976 bytes, `UiMovie::UiMovie`), its lists set up (`sub_8211ABB8`), its id kept (+40916), its file loaded and the movie put in the table; 1. |
+| `sub_82582CC0` | `MovieChunks::Find` | Overridden | r3 a chunk (+0 tag, +4 the offset to the next), r4 a tag: the next chunk tagged r4, or 0 at the "TRM" end (the end chunk when r4 is "TRM"). |
+| `sub_82582D10` | `Primitive::TextureEntry` | Overridden | r3 + 128 + 16 x r4. |
+| `sub_82582D20` | `Primitive::Vertex` | Overridden | Its 32-byte vertex r4, after its [+112] texture entries. |
+| `sub_82582D40` | `Picture::TextureEntry` | Overridden | r3 + 144 + 16 x r4. |
+| `sub_82582D68` | `Scene::Animation` | Overridden | The animation r4 of a scene (the entry [+116] + r4). |
+| `sub_82582D80` | `UiMovie::FixUpScene` | Overridden | r3 the scene, r4 the file: its entries' offsets made pointers (its animations through MovieFile::Animation), its sub-scenes the same. Returns 1. |
+| `sub_82582E28` | `Clip::Intersect` | Overridden | r3's clip narrowed by r4's: x0 and y1 the larger, y0 and x1 the smaller. Returns r3. |
+| `sub_82582EA8` | `UiMovie::ResetClip` | Overridden | Two chunks keyed r3 handed to the renderer: the clip back to 0, 0, 1280, 720 (at -10000), then the clip off (at -9000). |
+| `sub_82583028` | `DrawContext::DrawContext` | Overridden | Identity matrix, no clip, color 1.0, +96..+108 cleared. Returns r3. |
+| `sub_825830F0` | `DrawContext::Copy` | Overridden | r3 = r4: the matrix (Matrix::Copy, w words set first), clip, color, textures, text list, +104, the scaled flag. Returns r3. |
+| `sub_825831B8` | `UiMovie::ResetClipAfter` | Overridden | `UiMovie::ResetClip` keyed r4 (UiMovie::Update's last draws, keys 676 and 148). |
+| `sub_825831C8` | `UiMovie::RecordTexturedQuad` | Overridden | r3 a quad, r4 its key: one chunk on the command list (`[0x8297307C]`): its clip or the clip off, its texture, blend states by +68, sampler states by +112, its 24-byte vertices (position, an a-r-g-b word, u, v), handed to the renderer (`[0x82973078]`, slot 4) at depth 0. |
+| `sub_82583790` | `UiMovie::RecordQuad` | Overridden | As `sub_825831C8` without a texture (no texture commands, no u and v). |
+| `sub_82583D18` | `TextItem::Copy` | Overridden | r3 = r4: its node, matrix (Matrix::Copy), depth, color and clip. Returns r3. |
+| `sub_82583DC0` | `UiMovie::ApplyTransform` | Overridden | r3 the context, r4 the node: its clip (offset by the context's matrix's third row, kept or intersected), its color tinting the context's, its transform in front of the context's matrix (moved, turned, scaled about its pivot; steps doing nothing skipped). |
+| `sub_825842E0` | `UiMovie::DrawQuad` | Overridden | r3 a quad, r4 its key: recorded with or without a texture, then the clip reset (key + 1) when clipped. |
+| `sub_82584438` | `UiMovie::DrawPicture` | Overridden | r3 the context, r5 the picture, r6 the layer: a 4-vertex quad from (0, 0) to its size, in the context's color, its texture's pixel rectangle (or 0 to 1), flipped, clipped, drawn at the layer's depth. |
+| `sub_82584A40` | `UiMovie::DrawPrimitive` | Overridden | As DrawPicture with the primitive's vertices (colors tinted, squared when +100 is set). More than 16 vertices run the original. |
+| `sub_82584DF8` | `TextList::Append` | Overridden | r3 the list, r4 a text: copied into the next slot, the list doubled first when full (`sub_82584350`). Returns the slot. |
+| `sub_82584E68` | `UiMovie::QueueText` | Overridden | r3 the context, r5 the text node, r6 the layer: its transform applied; with a text list, a text item (node, matrix, depth, color, clip) appended. |
+| `sub_82584F40` | `UiMovie::DrawNode` | Overridden | r3 the context, r4 the scene, r5 the node, r6 the layer: its transform, then its children last first with a copy of the context each (hidden or scaled-to-nothing ones skipped): groups and scenes walked, pictures and primitives drawn, texts queued. |
+| `sub_825850F8` | `UiMovie::Draw` | Overridden | r3 the context (movie + 64), r4 the scene, r5 the textures, r6 the text list, r7 +104: the scene drawn at layer 0. |
+| `sub_82585118` | `Key::EaseInteger` | Overridden | r3, r4 the keys, f1 t: an integer track's eased value (the second key's curve values), truncated. |
+| `sub_82585228` | `Key::CubicFloat` | Overridden | A float track's cubic between the keys, tangents from tan of the second key's curve values; in f1. |
+| `sub_82585310` | `Key::CubicInteger` | Overridden | The same for an integer track, truncated, in r3. |
+| `sub_825863C8` | `XmdFile::Entry` | Overridden | r3 + [r3 + 16 + 4 x r4] while r4 is below [+12], else 0. |
+| `sub_825863F0` | `XmdFile::Check` | Overridden | 16-byte aligned and IsXmd. (Its byte swap for files not reading "XMD" never runs after IsXmd and isn't kept.) |
+| `sub_825865A8` | `MovieFile::Scene` | Overridden | r3 + [r3 + 4] when tagged "SCE", else 0. |
+| `sub_825865E8` | `UiMovie::FixUpFile` | Overridden | A loaded movie file (16-byte aligned, IsMovieFile): its table's offsets made pointers, its scene and animations fixed up. Returns 1, or 0 when it isn't one. |
+| `sub_8258BD30` | `UiMovie::FixUpAnimation` | Overridden | r3 the animation, r4 the file: its entries' offsets made pointers, its sub-animations' animations looked up (MovieFile::Animation). Returns 1. |
+| `sub_8211B4E0` | `TextMap::Find` | Overridden | r3 a movie's text map (128 {id, record} pairs, count at +1024), r4 an id's address: the record's slot, or 0x826B59B8 when the id isn't there (the id read only when the count isn't 0). Called by subtick's ticker text (`src/subtick/per_frame_logic.cpp`), `ui_movies.cpp`'s node lookups and the text getters. |
+| `sub_8211C0B8` | `RaceHud::DrawMirror` | Overridden | r3 a primitive node (the HUD's node 19): drawn as a quad with blend 4, key 597 (`sub_825842E0`), textured with render target 0 (`sub_8209F8A0`): each vertex at its place plus the node's, scaled by 0.8 (`sub_820AB518`), its texture coordinates its pixels over the texture's size, the node's color and alpha (times 255). The rear-view mirror. |
+| `sub_8211DB38` | `UiMovie::Play` | Overridden | r3 the movie, r4 a scene's index or -1, r5 an animation's index in it (`sub_82582D68`), r6 to r9 the slot's with-next, backwards, remove-at-end and hold: unless the looping list has it (r3 then the animation), queued at the queue's end at time 0 (its length when backwards, the word as it is) and copied to the movie's last started (+40920). |
+| `sub_8211DFA0` | `UiMovie::LoopNamed` | Overridden | MoveNamedAnimation to the looping list. |
+| `sub_8211E0E0` | `UiMovie::FinishNamed` | Overridden | r3 the movie, r4 a named animation's index: moved to the queue, then, when queued, applied at its end (`sub_82585FD8` at its length, or 0 when backwards) and taken off. |
+| `sub_8211E378` | `UiMovie::Run` | Overridden | A jump to UiMovie::Update (`sub_8211D4B8`, called through subtick's override): r3 the movie, r4 1 to draw only. |
+| `sub_82582E90` | `UiMovie::SetRenderer` | Overridden | r3 and r4 stored at `0x82973078` (the renderer) and `0x8297307C` (the command list). |
 
 ### `native_data_load`
 
@@ -1225,6 +1472,14 @@ The boot data's set-up. The records' and recordings' layouts are in `game/replay
 | `sub_821056D0` | `Replay::Create` | Overridden | Made with its seven records into [0x826B5830]. |
 | `sub_821059D8` | `BootData::CreateObjects` | Overridden | The boot's objects, in order. |
 | `sub_821067A0` | `BootData::Load` | Overridden | Once: the boot's steps. |
+| `sub_820CCB60` | `Defaults::Init` | Overridden | The defaults' bit sets (the unlocked cars', two new game sets, the new game's, 48 group sets of 15 words at 0x826B2D60), each cleared and its bit ranges set; the scratch set at 0x826B3D44 ends cleared. |
+| `sub_82106858` | `BootData::Unload` | Overridden | When the boot's load ran: the car parameters, the two movie lists, the save data's teardown (`sub_821057F8`) and the text freed, then `sub_821611F0`. Never runs in play. |
+| `sub_8210AF60` | `Text::Unload` | Overridden | `sub_82109B68` (the font's teardown) and `sub_8210A608`. |
+| `sub_82245658` | `LoadingScreen::AddMovie` | Overridden | A UI movie (40,976 bytes) made, loaded with r3's asset and appended to the list at 0x8280EE70. |
+| `sub_822456E0` | `LoadingScreen::Free` | Overridden | The list's movies destroyed and freed from the last. |
+| `sub_8228E658` | `OtherMovies::Add` | Overridden | As LoadingScreen::AddMovie, for the list at 0x8280F618. |
+| `sub_8228E6E0` | `OtherMovies::Load` | Overridden | The three movies whose ids are at 0x8262808C loaded into the list at 0x8280F618, their words cleared, then UiMovie::SetRenderer (`sub_82582E90`) with the render manager's renderer and command list. |
+| `sub_8228E7C0` | `OtherMovies::Free` | Overridden | As LoadingScreen::Free, for the list at 0x8280F618. |
 
 ### `native_race_sounds`
 
@@ -1232,17 +1487,17 @@ The race sounds' handlers. The sounds' ticks stay recompiled.
 
 | Address | Name | Status | Notes |
 |---|---|---|---|
-| `sub_82173B18` | `RaceSounds::ResumeCars` | Overridden | The music player's `sub_8210E440`, seven times. |
+| `sub_82173B18` | `RaceSounds::ResumeCars` | Overridden | `CarSound::ResumeAll` (`sub_8210E440`) seven times, on car slot 0 each time (as the original). |
 | `sub_82173D90` | `RaceSounds::OnEffectsBankLoaded` | Overridden | [0x826C7E70] = 1. |
 | `sub_82173760` | `RaceSounds::SetListener` | Overridden | The sound manager's slots 26, 25 and 27. |
-| `sub_82173BE0` | `RaceSounds::OnStageCountdown` | Overridden | The effects' volume back, the cars set up. |
-| `sub_82173BB8` | `RaceSounds::OnAbortDone` | Overridden | The same, the volume last. |
-| `sub_82173C08` | `RaceSounds::OnRollingStartDone` | Overridden | The music stopped once during the rolling start, the cars set up. |
-| `sub_82174828` | `RaceSounds::OnCountdown` | Overridden | The music back, the rival music picked. |
-| `sub_82174D20` | `RaceSounds::OnLeaveAfterRace` | Overridden | The cars' sounds updated, the music and effects back. |
-| `sub_82174D88` | `RaceSounds::OnNextStage` | Overridden | The music stopped and back, the rival music picked. |
-| `sub_82173B60` | `RaceSounds::OnAbort` | Overridden | The music stopped and back. |
-| `sub_82174F80` | `RaceSounds::OnRollingStart` | Overridden | The cars' sounds set up, the music back, the rival music picked. |
+| `sub_82173BE0` | `RaceSounds::OnStageCountdown` | Overridden | The effects' level back, the cars to be built, no longer held. |
+| `sub_82173BB8` | `RaceSounds::OnAbortDone` | Overridden | The same, the level last. |
+| `sub_82173C08` | `RaceSounds::OnRollingStartDone` | Overridden | With the cars built and not held, every car's sounds stopped; then the cars to be built again, no longer held. |
+| `sub_82174828` | `RaceSounds::OnCountdown` | Overridden | `CarSound::Update` on car slot 0, a music change asked for, the rival music picked. |
+| `sub_82174D20` | `RaceSounds::OnLeaveAfterRace` | Overridden | The cars' tick, a music change asked for, the effects' level back. |
+| `sub_82174D88` | `RaceSounds::OnNextStage` | Overridden | Every car's sounds stopped, a music change asked for with the cars held, the rival music picked. |
+| `sub_82173B60` | `RaceSounds::OnAbort` | Overridden | Every car's sounds stopped, a music change asked for with the cars held. |
+| `sub_82174F80` | `RaceSounds::OnRollingStart` | Overridden | The cars built when they're to be, a music change asked for, the rival music picked. |
 
 ### `native_race_screens`
 
@@ -1326,6 +1581,34 @@ The course scenery's pool objects and lookups, on the types in `game/course_scen
 | `sub_820FB800` | `PoolObject::IsExpiring` | Overridden | Flags 0x29. |
 | `sub_820FB818` | `PoolObject::SetVisible` | Overridden | 0x10 cleared, or set once loaded. |
 | `sub_820FB848` | `PoolObject::SetExpiring` | Overridden | 0x20 cleared, or set once loaded. |
+| `sub_820F1098` | `AreaModel::~Model` | Overridden | The area model's model's destructor; deleted with r4 bit 0. |
+| `sub_820F1188` | `AreaModel::Reset` | Overridden | Its model and XPR in use released, then `PoolObject::Reset`. |
+| `sub_820F1428` | `SceneryList::LoadAll` | Overridden | Each item's object taken and loaded the first time its key is asked for (queue below 480); 1 once all are in. |
+| `sub_820F1550` | `SceneryList::Stream` | Overridden | Each item's object found, or taken and loaded (queue below 960). |
+| `sub_820F1650` | `SceneryList::ReleaseUnused` | Overridden | Loaded objects not seen: expiring for two updates, then released. |
+| `sub_820F1718` | `SceneryList::Add` | Overridden | The item for r6, r7 gets the nearer distance (f1) and r8's bits, or is added. |
+| `sub_820F17C0` | `SceneryList::Sort` | Overridden | Items r5 to r6 nearest first (quicksort, the middle as pivot). |
+| `sub_820F1AC0` | `AreaLights::OnLoaded` | Overridden | `Archive::Load` callback (r6): parsed, marked loaded. |
+| `sub_820F1AF8` | `AreaModel::AreaModel` | Overridden | Pool 4's constructor: a pool object, its model (vtable 0x8200673C) and XPR made. |
+| `sub_820F1B78` | `AreaModel::OnLoaded` | Overridden | `Archive::Load` callback (r6): parsed, marked loaded. |
+| `sub_820F1BB0` | `Scenery::UnloadPools` | Overridden | The pools shut down, pool 0's block and the lists' blocks freed, the lists cleared. |
+| `sub_820F2308` | `CourseSet::CourseSet` | Overridden | Pool 2's constructor: a pool object, its parts made, its files and lists cleared. |
+| `sub_820F24C8` | `Scenery::MakePoolObject` | Overridden | The pools' factory: pools 0 and 1 a pool object and a word, 2 a course set, 3 area lights, 4 an area model. |
+| `sub_820F29E0` | `Scenery::Destroy` | Overridden | Both manager pointers cleared, the manager freed. |
+| `sub_820F2A20` | `Scenery::Unload` | Overridden | The visible areas freed, then `Scenery::UnloadPools`. |
+| `sub_820FB7C0` | `PoolObject::InUse` | Overridden | Flags 0x1. |
+| `sub_820FB930` | `PoolObject::KeyEquals` | Overridden | 1 when it has no key or its key's bytes are r4's. |
+| `sub_820FBAB8` | `ObjectPools::Init` | Overridden | r4 pools from r5's 24-byte descriptors in one physical block (64-byte aligned); each object made by the factory (or as a plain pool object), all free. |
+| `sub_820FBC98` | `ObjectPools::Shutdown` | Overridden | Every object reset (slot 2), the block freed. |
+| `sub_820FBD50` | `ObjectPools::Find` | Overridden | The first used object in use whose key is r5's; its index or -1. |
+| `sub_820FBDD8` | `ObjectPools::Acquire` | Overridden | The pool's first free object: in use, its key set (r5), first on the used list; its index or -1. |
+| `sub_820FBF08` | `ObjectPools::Release` | Overridden | The object reset (slot 2), first on the free list; returns the next used one. |
+| `sub_820F2A68` | `Scenery::LimitLargeModels` | Overridden | With more models listed than kept (+104): large models (number from a threshold by area: 24, 11, 18, 9, 54) among those kept past the 6th (11th with two views) swapped with the next listed one that isn't large. Areas are 0 to 4 in every course. |
+| `sub_820F2F68` | `Scenery::CollectAreas` | Overridden | r4 the view, r5 the viewport: each area of the course set's area file: 0 with the eye inside its rectangle, else half the far distance when the eye moved that far each way is inside, else the nearest corner; within the far distance + 70, added to the areas' list with the view's passes' bits. |
+| `sub_820F31A0` | `Scenery::CollectModels` | Overridden | Each model of the listed areas: its nearest corner (0 with the eye inside), within the far distance + 50 and seen by one of the view's passes, added to the models' list. |
+| `sub_820F3A40` | `Scenery::DrawArea` | Overridden | Each pass, a visible area (r5) when the pass (r4 +32), the manager (+196) and the area share a bit: the headlights' projectors, the draw keys and the pass's view; each area model drawn (shadow passes 10, 13, 16: its shapes' depth; else its textures set in the provider at +228, its shapes, then the depth after passes 0 to 2 when their post effect is there); with +196's 0x400 outside the shadow passes, its light groups. 400-byte frame as the original's. |
+| `sub_820F3398` | `Scenery::RecordHeadlightProjectors` | Overridden | The pass's camera from its viewport; with a player car, the car scene's first eight car models' headlights into eight slots (0x8296DE40 on: position, beam shape, two colors, direction, extra; 0 and 1 traded in pass 2), the direction normalized as the original's vector code (bit for bit); for the first five a projector built (`sub_8257CF28`) and recorded on the command list (header 5, vertex constants, the matrix, command 36) for the render queue (key 371 in pass 2, else 150); then 0x8264EA60 the scene's +5280. Always the draw keys and 0x8264EA40 the pass's eye. 640-byte frame as the original's. |
+| `sub_820F5178` | `Scenery::DrawSetLists` | Overridden | A pass of the course set's lists: the set's XPR in slot 1, the keys and view; every model of +1596, the entries of +2124 and +2652 that are on (`sub_821460E0`, `sub_821461E8`; their draw state reset), each with the identity world and range 10,000 to 50,000; then the point list's (+3180) entries that are on (`sub_821463A8`) drawn (`sub_821468E8`) with the race's current light setting. 384-byte frame as the original's. |
 
 ### `native_scene_loaders`
 
@@ -1352,6 +1635,64 @@ The scene loaders (`src/game/scene_loaders.cpp`, types in `src/game/scene_loads.
 | `sub_820D38C8` | `CarModel::IsLoaded` | Overridden | 0 while either of the two loads at +3952 is loading (state 2); else whether its own load's (+3728) state isn't 2. |
 | `sub_820D66B8` | `Pool4Object::IsLoaded` | Overridden | Whether its load's state (+100) isn't 2. |
 | `sub_8257C838` | `XPR::Count` | Overridden | +20, or 0 without a header (+16 = 0). |
+| `sub_820C3A50` | `ScenePools::MakeA` | Overridden | The 140-byte first set at [0x826B2B20], +4 = 0. |
+| `sub_820C3DE8` | `ScenePools::CreateA` | Overridden | The first set's counts from r4's sizes, the deferred releases' records, then each pool's objects in pages of their own, made on the pool's list with their index. |
+| `sub_820C4298` | `ScenePools::ReleaseA` | Overridden | Pool r4's object r5 released as its class does, its +16 = 0. |
+| `sub_820CE5C0` | `NameMatches` | Overridden | Same length, same letters ignoring case; '*' on either side matches any. |
+| `sub_820D0710` | `AllocPages` | Overridden | [r3] = VirtualAlloc(0, r4, MEM_COMMIT, PAGE_READWRITE). |
+| `sub_820D0768` | `XPR::FindByName` | Overridden | The first record whose name matches r4 (`NameMatches`), or -1. |
+| `sub_820D1EB8` | `PartModel::WalkMaterials` | Overridden | Each shape's materials looked up; nothing kept. |
+| `sub_820D37F8` | `CarModelLoads::Reset` | Overridden | Its slots reset, node values freed, XPRs released, providers reset, the decals' and sheets' words cleared. |
+| `sub_820D4228` | `CarModel::SelectedTexture` | Overridden | The body XPR's texture of the record's name choice (+7232 + 4 x [+3708]), or 0. |
+| `sub_820D43F0` | `CarModel::~CarModel` | Overridden | Released, its loads destroyed, off its list. |
+| `sub_820D5538` | `CarModel::CarModel` | Overridden | Pool 0: node, vtable 0x82004F74, record and loads made, the matrices' and points' w = 1, then `CarModel::Reset`. |
+| `sub_820D5630` | `CarModel::DeletingDestructor` | Overridden | The destructor, then deleted with r4 bit 0. |
+| `sub_820D5C70` | `Cockpit::ApplyPalettes` | Overridden | On its six arrived parts. |
+| `sub_820D5EE0` | `Cockpit::Release` | Overridden | Its buffers freed and slots reset, XPRs and providers released, record and anchor reset. |
+| `sub_820D5FD0` | `Cockpit::SetPaints` | Overridden | On its six arrived parts (r4 to r9). |
+| `sub_820D6048` | `Cockpit::Cockpit` | Overridden | Pool 2: node, vtable 0x82005000, loads made, its record, anchor and slots reset. |
+| `sub_820D6178` | `Cockpit::~Cockpit` | Overridden | Released, its loads destroyed, off its list. |
+| `sub_820D6448` | `Cockpit::DeletingDestructor` | Overridden | The destructor, then deleted with r4 bit 0. |
+| `sub_820D6720` | `Pool4Object::Pool4Object` | Overridden | Pool 4: node, vtable 0x82005044, its part model made, then `Pool4Object::Reset`. |
+| `sub_820D6780` | `Pool4Object::~Pool4Object` | Overridden | Its slot freed, model released, reset, part destroyed, off its list. |
+| `sub_820D6870` | `Pool4Object::DeletingDestructor` | Overridden | The destructor, then deleted with r4 bit 0. |
+| `sub_820D69F8` | `CarParts::SlotOf` | Overridden | A set a part kind's slot from r5 (and r6 for kinds 1, 8, 9); above 15 r3 as it is. |
+| `sub_820D6AC0` | `CarParts::Part` | Overridden | The arrived part model of kind r4, or 0. |
+| `sub_820D6B68` | `CarParts::WalkMaterials` | Overridden | `sub_820D1EB8` on each arrived part (216, or 187 outside set a). |
+| `sub_820D6BD0` | `CarParts::ApplyPalettes` | Overridden | `PartModel::ApplyPalette` on each arrived part. |
+| `sub_820D6CE8` | `CarParts::~CarParts` | Overridden | Released, its loads destroyed, off its list. |
+| `sub_820D6F08` | `CarParts::IsLoaded` | Overridden | Set a: none of 216 loading; set b: of the first 17; else 0. |
+| `sub_820D7038` | `CarParts::SetPaints` | Overridden | `PartModel::SetPaint` (r4 to r9) on each arrived part. |
+| `sub_820D70D8` | `CarParts::CarParts` | Overridden | Pool 1: node, vtable 0x82005074, loads made, the 216 parts reset, the record's defaults, +106000 = [0x826B2B20]. |
+| `sub_820D7170` | `CarParts::DeletingDestructor` | Overridden | The destructor, then deleted with r4 bit 0. |
+| `sub_820D7228` | `Interior::OnPartLoaded` | Overridden | `Archive::Load` callback (r3 the request, r6 the interior): the matching slot's part loaded, its buffer freed, state 3. |
+| `sub_820D72A8` | `Interior::Release` | Overridden | Its parts released; set a gives back the three accessories, set b the record's one. |
+| `sub_820D7340` | `Interior::ApplyPalettes` | Overridden | On its six arrived parts. |
+| `sub_820D7388` | `Interior::~Interior` | Overridden | Released, its parts destroyed, off its list. |
+| `sub_820D7440` | `Interior::IsLoaded` | Overridden | Sets a and b: none of its parts loading; and the accessories all loaded. |
+| `sub_820D74F0` | `Interior::SetPaints` | Overridden | On its six arrived parts (r4 to r9). |
+| `sub_820D7568` | `Interior::Interior` | Overridden | Pool 3: node, vtable 0x8200507C, six parts made and reset, record's defaults, +3092 = [0x826B2B20]. |
+| `sub_820D7610` | `Interior::DeletingDestructor` | Overridden | The destructor, then deleted with r4 bit 0. |
+| `sub_820D7760` | `TrafficCar::Reset` | Overridden | +7392 = [0x826B2B20], record reset, slots reset, XPRs and providers released, the eight release ids cleared, parts reset. |
+| `sub_820D7840` | `TrafficCar::Release` | Overridden | Its eight deferred releases handed back (`sub_820C3D60`), node file freed, then `TrafficCar::Reset`. |
+| `sub_820D78A8` | `TrafficCar::ApplyPalettes` | Overridden | On its six arrived parts. |
+| `sub_820D7B40` | `TrafficCar::~TrafficCar` | Overridden | Released, its loads destroyed, off its list. |
+| `sub_820D85C0` | `TrafficCar::TrafficCar` | Overridden | Pool 6: node, vtable 0x82005094, record and loads made, w = 1 on its points and matrices, then `TrafficCar::Reset`. |
+| `sub_820D8670` | `TrafficCar::DeletingDestructor` | Overridden | The destructor, then deleted with r4 bit 0. |
+| `sub_820D8760` | `WheelsLoads::Reset` | Overridden | For both sides: slots reset, models released and cleared, XPR released, provider reset. |
+| `sub_820D8D80` | `Wheels::~Wheels` | Overridden | Released, its loads destroyed, off its list. |
+| `sub_820D9238` | `Wheels::Wheels` | Overridden | Pool 5: node, vtable 0x820050E0, two records reset, loads made, then `Wheels::Reset`. |
+| `sub_820D92B0` | `Wheels::DeletingDestructor` | Overridden | The destructor, then deleted with r4 bit 0. |
+| `sub_820F0668` | `Accessories::AllLoaded` | Overridden | Each entry there has its accessory's +1048 set. |
+| `sub_82579600` | `PoolNode::PoolNode` | Overridden | r4 the list: vtable 0x82069A90, appended. |
+| `sub_82579678` | `PoolNode::~PoolNode` | Overridden | Taken off its list when on one. |
+| `sub_8257C858` | `XPR::RecordName` | Overridden | Record r4's name (16-byte records, +12), or 0 past the count. |
+| `sub_820D0090` | `ModelPoint::Find` | Overridden | r3 a point record, r4 a part model: the record cleared; with a skeleton (+408), it posed and the node named at the record's +160 found: the record's matrix the node's, its position x 0.1, times the identity turned -pi/2 about y; +144 the position, +80 the inverse, +224 the node. 1 when found. 368-byte frame as the original's. |
+| `sub_820D3B38` | `CarModel::Reset` | Overridden | +7256 = [0x826B2B20], the car record and loads reset; the tires' and seats' matrices the identity (memcpy from one built at +96 of its 304-byte frame), their positions (0, 0, 0, 1); the six name lookups -1; +7200 = 0, the anchor (0, 0, 0, 1). |
+| `sub_820D61D0` | `Cockpit::OnFileLoaded` | Overridden | `Archive::Load` callback (r3 the request, r4 the buffer, r6 the cockpit): a part built, a body XPR made and set in its provider, or the node file bound and posed, then the last "acce_null" node's matrix (+3472) and the anchor (+3488) from its position x 0.1, turned. 256-byte frame as the original's. |
+| `sub_820D80E0` | `TrafficCar::OnFileLoaded` | Overridden | `Archive::Load` callback (r3 the request, r6 the car): "<name>_ex" printed in its frame; entry 0 the body XPR; `sub_820ED308` given the four release words and the part order by value (r7 to r10 and the frame's +80, +88); +7056 the "<name>_ex" record; entry 1 the nodes, the four tires' matrices (+7136); their positions (+7072) x 0.1, turned, w 0; entries 2 to 7 the six parts; the buffer freed, state 3. 1,344-byte frame as the original's. |
+| `sub_820D5DB0` | `Cockpit::BindTextures` | Overridden | 0 while any of its files is loading; else the interior texture ("<name>_inte_on", or "<name>_inte_on_0<n>" with the record's +20) for car blocks below 18 into +3504 and each part's +452, each part's provider the cockpit's; 1. Its 1,168-byte frame holds the name. |
+| `sub_820D79E8` | `TrafficCar::BindTextures` | Overridden | 0 while its file is loading; else each part's provider the car's and `sub_820CE7B8`; with a variant (record +160 above 0) and a body texture, "<name>_ex_0<n>" into +7060 and each part's +460, +436 the body texture; 1. Its 1,184-byte frame holds the name. |
 
 ### `native_scene`
 
@@ -1434,16 +1775,39 @@ The records and paints set as loads finish, the car model's ready check (`src/ga
 
 | Address | Name | Status | Notes |
 |---|---|---|---|
-| `sub_820D8B88` | `Wheels::SetRecord` | Overridden | memcpy of the 156-byte record at r4 into +28. |
-| `sub_820D8B98` | `Wheels::SetCaliperTexture` | Overridden | The record's caliper texture (+116) set on the two brake models (+2336, +2800; `sub_820D1420`, r5 = -1). |
-| `sub_820DC7E8` | `SceneLights::SetRecord` | Overridden | memcpy of the 52-byte record at r4 into +32, then `Pool4Object::SetRecord` on the object at +28. |
-| `sub_820DC838` | `SceneLights::ApplyRecord` | Overridden | +104..+136 = 0, `SceneLights::SetRecord`, then the record's texture (+32) set on the model at +13152. |
-| `sub_820E04B0` | `SceneParts::ApplyPaint` | Overridden | `sub_820D7038` on the object at +104. |
-| `sub_820E3E18` | `SceneInterior::ApplyPaint` | Overridden | `sub_820D74F0` on the object at +36. |
-| `sub_820DBDA8` | `SceneCockpit::ApplyPaint` | Overridden | `sub_820D5FD0` on the object at +32, then `SceneInterior::ApplyPaint` on the one at +28 (r4 to r9 as they came). |
-| `sub_820E5DC0` | `SceneTraffic::ApplyPaint` | Overridden | `sub_820D7AC8` on the object at +9760. |
-| `sub_820D32A0` | `GaugeTableEntry` | Overridden | The gauge r3's entry for level r4 (16-byte entries at 0x820035E0, the second of two for levels 3 and up). |
-| `sub_820D3CE8` | `CarModel::IsReady` | Overridden | IsLoaded for a record of kind 0 or 1 ([+7256] + 8), else 0. |
+| `sub_820D8B88` | `Wheels::SetRecord` | Overridden | memcpy of the 156-byte record into +28. |
+| `sub_820D8B98` | `Wheels::SetCaliperTexture` | Overridden | The record's caliper texture (+116) on the two calipers (+2336, +2800). |
+| `sub_820DC7E8` | `SceneLights::SetRecord` | Overridden | memcpy of the 52-byte record into +32, then `Pool4Object::SetRecord`. |
+| `sub_820DC838` | `SceneLights::ApplyRecord` | Overridden | +104..+136 = 0, `SetRecord`, the record's texture on the model at +13152. |
+| `sub_820E04B0` | `SceneParts::ApplyPaint` | Overridden | `sub_820D7038([+104], the paints)`. |
+| `sub_820E3E18` | `SceneInterior::ApplyPaint` | Overridden | `sub_820D74F0([+36], the paints)`. |
+| `sub_820DBDA8` | `SceneCockpit::ApplyPaint` | Overridden | `sub_820D5FD0([+32])`, then `SceneInterior::ApplyPaint([+28])`, the paints passed on. |
+| `sub_820E5DC0` | `SceneTraffic::ApplyPaint` | Overridden | `TrafficCar::SetPaint([+9760], the paints)`. |
+| `sub_820D32A0` | `GaugeTableEntry` | Overridden | Replaces `sub_820D32A0` (unchanged). |
+| `sub_820D3CE8` | `CarModel::IsReady` | Overridden | IsLoaded for set a or b ([+7256] + 8), else 0. |
+| `sub_820D6F88` | `CarParts::SetVinylTextures` | Overridden | Each part model (216 in set a, 187 in set b but 7, 9, 14): +48 = the car model's +4048, `Model::SetVinylTextures` with its sheet. |
+| `sub_820D7AC8` | `TrafficCar::SetPaint` | Overridden | `PartModel::SetPaint` on each of the six parts (+4256) whose slot (+4124) is 3. |
+| `sub_820D8EA8` | `Wheels::ApplyPaint` | Overridden | `PartModel::SetPaintBody` on the tires (+240 with paints 1, 0, 2; +704 with 4, 3, 5) and the rims or brakes (+1216 with 0, 1, 2; +1680 with 3, 4, 5). |
+| `sub_820D9830` | `SceneModel::ApplyPaint` | Overridden | Once ready, the record's three colors (+64, +80, +96, in r4 to r9): a traffic body's, or the parts', interior's and (after `CarModel::SetVinylTextures`) cockpit's. |
+| `sub_820D9918` | `SceneModel::ApplyWheelPaint` | Overridden | Once ready, not traffic, with the wheels record's +4 set and wheels: the record's six wheel colors (+112 to +207) on the first set's wheels. |
+| `sub_820D99D8` | `SceneModel::ApplyLightKit` | Overridden | Once ready, not traffic, with a light kit: `SceneLights::ApplyRecord(+5084, +4224)`. |
+| `sub_820D9B68` | `SceneModel::ApplyPalettes` | Overridden | The first set's palettes: a traffic body's, or a car's parts', interior's and cockpit's; then `Wheels::ApplyPalette`. |
+| `sub_820D9FE0` | `SceneModel::PollLoad` | Overridden | 0 with +5028 or +5040 set. Traffic (kind 3): the body (+5092, unless +5096) and then the wheels' +16780 = its tire positions; cars: the car model (IsReady and its decals' state 3), parts, interior, cockpit, lights; then the wheels (+5100, unless +5104); 0 at the first not finished. With every part's flag set (+5052, +5064, +5072, +5056, +5080 in a race, +5104, +5088) +5036 = 1; the first time it isn't, every flag set and the palettes, wheel points, parts' vinyl textures, paint, light record and wheel paint applied. 1. |
+| `sub_820DBC68` | `SceneCockpit::Finish` | Overridden | Once `Cockpit::BindTextures([+32])`: the interior's +11664 = the body's +3504 and `SceneInterior::Finish`; then +4312 = 1, the body's six part models, `CockpitPoints::Find`. |
+| `sub_820DD6D8` | `SceneLights::Finish` | Overridden | Once `Pool4Object::IsLoaded([+28])`: +13156 = 1, +13152 its model, the record's texture, the model's +48 = the car scene's +364, `LightPoints::Find`. |
+| `sub_820DF018` | `SceneParts::SetSelectedTexture` | Overridden | Each part model present: +452 = `CarModel::SelectedTexture`. |
+| `sub_820E0188` | `SceneParts::Build` | Overridden | +32 + 4k = `CarParts::Part([+104], k, ...)` for the 17 kinds by the record's choices (kind 4 none for choice 13), `PartsPoints::Reset`, the points' links (+37252 to +37268), `PartsPoints::Find`, `CarParts::WalkMaterials`, `SceneParts::SetSelectedTexture`. |
+| `sub_820E2A30` | `SceneParts::Finish` | Overridden | 1 once +100; else +100 = `CarParts::IsLoaded([+104])` and, loaded with the scene's +4 0 or 1, `SceneParts::Build`. |
+| `sub_820E2C08` | `InteriorDials::SetBlock` | Overridden | +4 the block, +2896 its record (`sub_820D3370`), +8 the car scene's +1132 or +1064 by `sub_820D3280`, `sub_820D3248`. |
+| `sub_820E2EB0` | `InteriorMeters::SetGauge` | Overridden | Gauges 0-6 (others the original): the provider at +5296, the texture (3 at most in a race) on its point record's model and shape (records 7, 8, 11, 12, 15, 16, 17), +5328 the table entry. |
+| `sub_820E3500` | `SceneInterior::SetGauges` | Overridden | Each of seven gauge choices (record +8, 12 bytes) enabled, but the second on block 5: `InteriorMeters::SetGauge` with the car scene's +4816 + 20 x image. |
+| `sub_820E3D08` | `SceneInterior::Finish` | Overridden | Once `Interior::IsLoaded([+36])`: its six part models (+11632) given +32 and the cockpit's texture (+11664) or the selected one, `InteriorDials::SetBlock`, the meters' block and provider, the links (+11600 to +11608), `InteriorPoints::Find`, `SceneInterior::SetGauges`, +11660 = 1. |
+| `sub_820E5658` | `SceneTraffic::Finish` | Overridden | Once `TrafficCar::BindTextures([+9760])`: its skeleton, six part models and second texture (+5184, +5188) linked, `TrafficPoints::Find`; +9792 never set. |
+| `sub_820E6F10` | `SceneWheels::Finish` | Overridden | Once `Wheels::BindTextures([+28])`: +16768 = 1. |
+| `sub_820E84F0` | `SceneWheels::SetUpPoints` | Overridden | Once: the points' links (+192: the car model, or the traffic record and tire positions; the record; the tire, rim and caliper models), `WheelPoints::SetUp`, `Wheels::SetRecord`, `Wheels::SetCaliperTexture`, +16772 = 1. |
+| `sub_820E85E8` | `SceneWheels::ApplyPaint` | Overridden | Six paints (r4 to r10, then the caller's stack +88 to +127) on `[+28]`. |
+| `sub_820D8F68` | `Wheels::ApplyPalette` | Overridden | `PartModel::ApplyPalette` on the six models, then `SetMaterials` with flags 3 and 4 (material +80, +84 = the record's two floats for the end) on the tires and rims or brakes, categories 1 and 2, front then rear. |
+| `sub_820D9300` | `Wheels::BindTextures` | Overridden | 0 while the calipers' second slot is loading; else the six models' texture providers (tires and calipers the car scene's, rims or brakes the wheels' own lists), the record's tire textures on the tires, then `PartModel::SetMaterials` on both tires with only flag 4 (material +84 = 0.0). 1. |
 
 ### `native_car_makers`
 
@@ -1454,6 +1818,28 @@ The garage cars' resets.
 | `sub_82110370` | `GarageCar::Reset` | Overridden | Its fields set and its calls made, in the original's order. |
 | `sub_825BF2C8` | `GarageCars::StaticInit` | Overridden | Its fields set and its calls made, in the original's order. |
 | `sub_820D06C0` | `CarRecord::ResetBytes` | Overridden | Its fields set and its calls made, in the original's order. |
+| `sub_82158AD0` | `CarModels::BlockOf` | Overridden | r3 a car id: its model block (a 71-entry table: ids 1-71), 0 out of range. |
+| `sub_82158B04` |  | Overridden | `CarModels::BlockOf`'s case for id 1 (a function of its own): 1. |
+| `sub_82158C70` | `SceneModelRecord::SetPaint` | Overridden | r3 a record, r4 a car, r5 the paint pick (-1 the car's, -2 its custom color): the paint's three colors (traffic: the pick only), then the wheels' colors. |
+| `sub_821590E0` | `CarRecord::SetBytes` | Overridden | r3 a car record, r4 the car's options (+1568): the part order reset, then set from the option bytes; +3680 the first byte. |
+| `sub_821591C8` | `SceneModelRecord::SetChoice` | Overridden | r3 out, r4:r5 a 12-byte {a, b, c} in two doublewords: none for c 0, else 1, c - 1, 3a - 3 + a step. |
+| `sub_82159260` | `SceneModelRecord::SetWheels` | Overridden | r3 a record, r4 a car: the wheels' record (wheel models, calipers, each tire's rim, width mm and aspect %); r3 the car's block 2. |
+| `sub_82176C90` | `GarageStage::FitCar` | Overridden | r3 the holder, r4 a car: a car data built in the frame, then the stage's car sizes (+6096 to +6204) from it. |
+| `sub_82176E48` | `GarageStage::ReapplyRecord` | Overridden | The stage's scene model's paint, wheel paint, record and light kit applied again, its decals reloaded. |
+| `sub_82176EB0` | `GarageStage::ReapplyRecordNoDecals` | Overridden | As `sub_82176E48` without the decals. |
+| `sub_82177AB0` | `CarData::FromGarageCar` | Overridden | r4 a garage car, r5 a car data: a car built in the frame from it (Init, 1,880 bytes, Refresh), added as a racer, the car data set up from it. |
+| `sub_8217D768` | `GarageStage::ReloadModel` | Overridden | r3 the holder, r4 a model block or -1: counts frames; from the fourth, once the model has loaded, releases it and sets up a new one for the block (1), else 0. |
+| `sub_8217DB48` | `GarageStage::CopyRecord` | Overridden | r3 the stage's holder, r4 a record: `SceneModelRecord::Copy` onto the stage's scene model's record. |
+| `sub_8217DC40` | `GarageStage::SetCar` | Overridden | r3 the holder, r4 a car, r5 the paint pick: the scene model's record from the car, copied, the stage fitted, the record re-applied. |
+| `sub_8217DCB0` | `GarageStage::SetCarClass` | Overridden | As `SetCar` without the fit: the record's +3768 = 1 for a pick of 1, 2 or 4; re-applied without decals. |
+| `sub_82180B40` | `GarageStage::ShowCarById` | Overridden | r3 the paint pick: the dealer's shown car built in the frame and set on the stage (`SetCar`). |
+| `sub_82180BE0` | `GarageStage::ShowCarByIdWithClass` | Overridden | As `sub_82180B40` with `SetCarClass`. |
+| `sub_8219D230` | `GarageScreen::ShowBusyMarker` | Overridden | Movie 6's named animations 86, 87 finished, 86 and 85 played, 85 looped. |
+| `sub_8219D2D0` | `GarageScreen::HideBusyMarker` | Overridden | Movie 6's 86, 87, 85 finished, 87 played. |
+| `sub_8219D350` |  | Overridden | As `sub_8219D2D0`, then 87 finished. |
+| `sub_821DD738` | `TuningScreen::SetUpCarData` | Overridden | r3 the tuning screen: the selected garage car (the save's garage list walked) into the screen's car data. |
+| `sub_82159880` | `SceneModelRecord::FromCar` | Overridden | r3 a scene model record, r4 a car, r5 the paint pick: the record reset; its kind (2 players, flags 0x81; 1 other cars, 0x2; 3 traffic) and model block; wheels and paint; for players the cockpit (from the aero levels), light kits, five interior choices and accessory; for cars the parts (engine stage and its class, the aero levels, or a body kit's entry from the table at 0x82009318 by model block, with the kit's flags from `AeroParts::Get82`), the 46 decals into the record's layers; the class flag (car +4 of 1, 2 or 4); for cars the pool 4 record from the car's three slots and each tire grade's class; last `CarRecord::SetBytes` (r3). |
+| `sub_8219F8A0` | `RivalListScreen::Update` | Overridden | The rival list screen's update (through its vtable; the game names the screen `TXR_MenuRivalList`): the transition machine `[0x826C7EE4]` runs its transition (one of 21, given the machine's +24; done: the queued one next, or the level settles), none running: movie 6 runs unless leaving (level 4). Then with the screen's `[0x826C7EF0]` +0x3265C set: the stand's busy marker shown or hidden by `GarageStage::IsBusy`, `GarageStage::ReloadModel` until it answers, then the selected entry's car (+0x2C784 + 52 x +0x32664, its +48 to `Car::FromBuild`) built in the frame and set on the stand (`SetCar`, `Command` 54), and once shown `GarageStage::Step`; without it, a shown marker hidden (`sub_8219D350`). |
 
 ### `native_texture_compression`
 
@@ -1487,12 +1873,64 @@ The save interface's queries (`src/game/save_interface.cpp`, types in `src/game/
 | `sub_820A5A10` | `SaveSlot::State` | Overridden | +988. |
 | `sub_820A03F0` | `SaveInterface::RequestDevice` | Overridden | The save devices' slot 1. |
 | `sub_820A04B0` | `SaveInterface::SaveCount` | Overridden | Slot 4. |
-| `sub_820A0508` | `SaveInterface::FreeBytes` | Overridden | Slot 3. |
+| `sub_820A0508` | `SaveInterface::FreeBytes` | Overridden | Slot 3, its low word (the 64-bit answer was passed on whole before). |
 | `sub_820A0560` | `SaveInterface::Pending` | Overridden | Slot 8. |
 | `sub_820A05B8` | `SaveInterface::Device` | Overridden | Slot 2. |
 | `sub_820A0610` | `SaveInterface::SaveAt` | Overridden | Slot 5. |
 | `sub_8236FD60` | `word +92` | Overridden | The word at +92. |
 | `sub_82473DE8` | `word +216` | Overridden | The word at +216 (a Users' count). |
+| `sub_820A01A0` | `SaveInterface::Init` | Overridden | r3 (the app's interface) into 0x826AD970; the save devices' root name set to "TXR360". |
+| `sub_820A01F0` | `SaveInterface::Clear` | Overridden | 0x826AD970 = 0. |
+| `sub_820A0200` | `SaveInterface::SlotState` | Overridden | Slot 7 (the slot's state); past 9, 0. |
+| `sub_820A02E0` | `SaveInterface::Failure` | Overridden | Slot 11 (the slot's failure); past 5, 0. |
+| `sub_820A0398` | `SaveInterface::AcknowledgeFailure` | Overridden | Slot 12. |
+| `sub_820A0448` | `SaveInterface::SaveFlag` | Overridden | Slot 6 (r4 an enumerated save). |
+| `sub_820A0678` | `SaveInterface::Save` | Overridden | Slot 15 (RequestSave), the arguments shifted one register, the thumbnail's size on the stack (+84 of its 160-byte frame). |
+| `sub_820A06F8` | `SaveInterface::Load` | Overridden | Slot 16 (RequestLoad). |
+| `sub_820A0768` | `SaveInterface::Delete` | Overridden | Slot 17 (RequestDelete). |
+| `sub_820A4788` | `SaveSlot::AllocBuffers` | Overridden | The saves' (r4 x 308 bytes) and their flags' arrays, operator new[]. |
+| `sub_820A4A28` | `SaveDevices::OnEvent` | Overridden | On event 1, its tick handler and listener removed from the run loop (slots 4 and 3). |
+| `sub_820A4A98` | `SaveSlot::WaitForUser` | Overridden | State 0: 3 once the slot's user is 0 to 3. |
+| `sub_820A4AB8` | `SaveSlot::Failed` | Overridden | State 2: until the failure is acknowledged. |
+| `sub_820A4E28` | `SaveSlot::WaitCloseItem` | Overridden | XGetOverlappedResult on +100: 1 done, 0 pending, else -8. |
+| `sub_820A5088` | `SaveSlot::WaitWrite` | Overridden | GetOverlappedResult on the file, then GetLastError: 1, 0 pending, -10 disk full, else -9. |
+| `sub_820A5218` | `SaveSlot::WaitRead` | Overridden | As WaitWrite, else -11. |
+| `sub_820A5290` | `SaveSlot::WaitClose` | Overridden | The content's close waited on; done or failed, the file's handle and event closed; 1, 0, -8. |
+| `sub_820A53B0` | `SaveSlot::WaitThumbnail` | Overridden | The same on +136, else -9. |
+| `sub_820A54B0` | `SaveSlot::WaitDelete` | Overridden | The same on +136, else -12. |
+| `sub_820A5500` | `SaveSlot::RequestSave` | Overridden | When the slot is ready: the names, data and thumbnail copied in, the save's request raised; 1, else 0. |
+| `sub_820A5608` | `SaveSlot::RequestLoad` | Overridden | As RequestSave, with no thumbnail and the load's request. |
+| `sub_820A5708` | `SaveSlot::RequestDelete` | Overridden | As RequestSave with the names only and the delete's request. |
+| `sub_820A5810` | `SlotArray::Reset` | Overridden | The slots freed (their vector deleting destructor, or operator delete[] of an empty header), the word cleared. |
+| `sub_820A5908` | `SaveDevices::Destroy` | Overridden | The listener closed, the slots freed, the vtable stepped down. |
+| `sub_820A59F0` | `SaveDevices::SaveFlag` | Overridden | The slot's flag for r5's save (1 when it couldn't be opened). |
+| `sub_820A5A70` | `SaveDevices::Failure` | Overridden | The slot's +992. |
+| `sub_820A5A88` | `SaveDevices::AcknowledgeFailure` | Overridden | The slot's +980 = 1. |
+| `sub_820A5AA0` | `SaveSlot::WaitForDevice` | Overridden | State 1: the device selector on request, else 3 once there's a device. |
+| `sub_820A5B00` | `SaveSlot::Ready` | Overridden | State 3: the first request raised starts (selector, enumeration, save, load, delete). |
+| `sub_820A5BE8` | `SaveSlot::EnumerateStep` | Overridden | State 5: the enumeration and its wait (`sub_820A4BF0`, `sub_820A4CA8`). |
+| `sub_820A5CB0` | `SaveSlot::CheckStep` | Overridden | State 6: each save opened and closed again (`sub_820A4D38`, `sub_820A4DB8`), its flag cleared when it opened. |
+| `sub_820A6238` | `SaveSlot::DeleteStep` | Overridden | State 9: the delete (`sub_820A5400`) and its wait. |
+| `sub_820A6338` | `SaveDevices` deleting destructor | Overridden | Destroy, then operator delete with bit 0 of r4. |
+| `sub_8228CA98` | `SaveBuffers::Create` | Overridden | When none: the 24-byte header and its three buffers (129,200, 1,334,880 and 36 bytes), VirtualAlloc. |
+| `sub_8228CBB8` | `Users::Name` | Overridden | XUserGetName of player r3's controller into r4, 16 bytes. |
+| `sub_8228CBD0` | `SaveBuffers::FreeReplayList` | Overridden | The replays' records freed (VirtualFree) and cleared. |
+| `sub_8228CC28` | `Replays::Sort` | Overridden | The records sorted by number (+28) by swaps through a copy in its frame (memcpy). |
+| `sub_8228CCE0` | `SaveBuffers::Destroy` | Overridden | The replays' records, the three buffers and the header freed; 0x8280F1F8 = 0. |
+| `sub_8228CE78` | `SaveSlots::Device` | Overridden | r3 a player: SaveInterface::Device on their slot. |
+| `sub_8228CEB0` | `SaveSlots::Pending` | Overridden | r3 a player: SaveInterface::Pending on their slot. |
+| `sub_8228D138` | `GameData::Find` | Overridden | The game data's save among player r3's saves: 7, 8 when damaged, 3 not there (or no device), 4 busy. |
+| `sub_8228D370` | `Replays::Load` | Overridden | Record r3's replay (the entry by its number) loaded into the replay buffer from player 0's slot. |
+| `sub_8228D428` | `Replays::CheckRoom` | Overridden | 0 when player r3's device has room for a replay (1,334,880 bytes in blocks, `sub_82293660`), 2 if not, 3 no device, 4 busy. |
+| `sub_8228D688` | `Replays::Count` | Overridden | Player 0's saves named `rep...` counted into r3; 7. |
+| `sub_8228D760` | `Replays::BuildList` | Overridden | The replays' records and entries made again (with an empty first one when r3 and under 99), each save read (ReadEntry, recompiled), the records sorted; 7. |
+| `sub_8228D918` | `Replays::SaveNew` | Overridden | The record being saved numbered with the first free number, then Replays::Save (recompiled). |
+| `sub_8228D988` | `Replays::SaveAs` | Overridden | The record being saved numbered r3, then Replays::Save. |
+| `sub_8228D9A8` | `Replays::Delete` | Overridden | The replay numbered r3 deleted from player 0's slot; 1, or 0 when not listed. |
+| `sub_8228DA28` | `Replays::SaveFlag` | Overridden | SaveInterface::SaveFlag on player 0's slot with record r3's number. |
+| `sub_820A6388` | `SaveDevices::SaveDevices` | Overridden | Its update and event handler added to the run loop (member delegates in its 176-byte frame; the run loop clones them), the storage devices' listener (XNotifyCreateListener), the four slots and their buffers, the state handlers, the root name's default. |
+| `sub_8228D228` | `Replays::Save` | Overridden | r3 a record, r4 the data: the file name (sprintf, the time capped at 59:59.999) and display name (swprintf) built in its 480-byte frame, then SaveInterface::Save on player 0's slot (1,334,880 bytes, no thumbnail). |
+| `sub_8228D4C8` | `Replays::ReadEntry` | Overridden | r3 an enumerated save, r4 a record, r5 a list entry: when player 0's save is a replay (`rep...`), its twelve numbers read from the file name (sscanf into its 240-byte frame, seven pointers on the stack) into the record, the names into the entry; 6, or 5 not a replay, 3 no device, 4 busy. |
 
 ### `native_std_list`
 
@@ -1601,12 +2039,19 @@ The app states' set-ups, resets, small setters, copies and getters (`src/game/ap
 
 ### `native_archive`
 
-The archive' set-ups, resets, small setters, copies and getters (`src/game/archive.cpp`), generated from SBX's code and checked against the recompiled functions. The rest of the subsystem stays recompiled.
+The archive (`src/game/archive.cpp`, types in `src/game/archive.h`): the TOC lookups, `Archive::Load` and the request queue, the list it's made of, and `Ucl::Unpack` (`src/game/ucl.cpp`). `Archive::GetToc`, `Archive::GetSize`, `Archive::Load`, `Archive::Queue`, `Archive::FindLooseFile` and `Ucl::Unpack` have their rows above. The loader thread, `Archive::Init` and `Archive::Shutdown` stay recompiled (the plan: our own archive service).
 
 | Address | Name | Status | Notes |
 |---|---|---|---|
-| `sub_822925A8` | `ListNode::ListNode` | Overridden | 2 stores. |
-| `sub_822925C0` | `List::List` | Overridden | 5 stores. |
+| `sub_822925A8` | `ListNode::ListNode` | Overridden | r3 the node, r4 its link. |
+| `sub_822925C0` | `List::List` | Overridden | r3 the list, r4 whether it deletes its nodes; +8 the count, +12 the head, +16 the tail. |
+| `sub_822925E8` | `List::Append` | Overridden | r3 the list, r4 the node: linked after the tail; 1, or 0 for no node. |
+| `sub_82292640` | `List::Remove` | Overridden | r3 the list, r4 the node: unlinked (the node keeps its own link); 1, or 0 when it isn't there. |
+| `sub_8209D938` | `Archive::FindSlot` | Overridden | r3 a serial (-1 for a free slot): the first of the 960 92-byte slots at `0x82694E48` holding it, or 0. |
+| `sub_8209DC40` | `Archive::Cancel` | Overridden | r3 a serial: under the lock, a request the loader hasn't started (+52 0) is taken off the queue and its slot freed. 1, also when there's no such request; 0 when it's loading. |
+| `sub_8209DCB0` | `Archive::CancelQueued` | Overridden | r3 whether to wait: drops every waiting request with flag 0x4000 (every `Archive::Load` sets it); then `Archive::WaitIdle` when asked. |
+| `sub_8209D8D0` | `Archive::QueueLength` | Overridden | The queue's count (`0x826AA7E8` +8), under the lock. |
+| `sub_8209D850` | `Archive::WaitIdle` | Overridden | With requests queued, sets `0x82694DE8` so the loader signals the idle semaphore (`0x826AA770`) once the queue drains, and waits on it. |
 
 ### `native_boot_mode`
 
@@ -1651,16 +2096,71 @@ The cameras' set-ups, resets, small setters, copies and getters (`src/game/camer
 | `sub_820A0B50` | `CameraPass::Enable` | Overridden | 1 stores. |
 | `sub_820AADF8` | `Viewport::Update` | Overridden | No stores; calls `sub_820AA508`. |
 
+### `native_race_camera`
+
+The race camera (`src/game/race_camera.cpp`, types in `src/game/race_camera.h`), written from SBX's code. How a frame's camera is made:
+
+1. `RaceCamera::Update` (the race mode's Update message, r3 the race mode's member `RaceModeMember`, r4 the message dispatcher) reads the followed car's control record (`0x826B5810`, by the member's +77392): the view button (0x40) steps the player 1 viewport's mode (chase → cockpit → hood → chase; with `RaceData::camera_flags` 0x80, likely replays, chase → TV → cockpit → hood; none in split screen), button 0x80 resets the chase camera, and the look stick (+12, a halfword) turns the cockpit camera by up to 60 degrees. A mode that differs from the member's (+9628) goes to `RaceCamera::SetMode`. Then the active camera's update (vtable slot 0; two in split screen) and `Viewport::Update` on each viewport.
+2. The camera mode writes its viewport's eye (+1600), target (+1616) and up (+1632) (`[0x826B29C8]`: two viewports of 1,872 bytes, then the split screen flag).
+3. `Viewport::Update` (`sub_820AA508`) keeps the main view's last eye, target and up (+1760), copies the new ones into view 0, and builds the rear-view mirror's view (1) and the reflection cube's views (2-7) from them. A viewport's 20 views of 80 bytes go one to a camera pass: eye +16, target +32, up +48, roll +64, field of view +68.
+4. `CameraPass::SetFromViewport` copies a view into its camera pass and builds the pass's matrices (`CameraPass::Update`).
+
+The modes, each an object in the race mode's member (`RaceModeMember`, `src/game/game_modes.h`); +68512 and +68516 point at the active one (one a player):
+
+| Mode | Object | Start (snaps the camera) | Update (vtable slot 0) | What |
+|---|---|---|---|---|
+| 0 | +12976 | `sub_82152620` | `sub_821528E0` (follows with `sub_82151708`) | Chase. Its distance is half the car's length + 2.6 m and its height half the car's height - 0.1 m (block 2's dimensions, `docs/game_data.md`), raised by one of five angles (6, 9, 12, 17, 22 degrees at `0x8200924C`, by its +372) |
+| 1 | +11856 | `CockpitCamera::Start` | `CockpitCamera::Update` | Cockpit: the car model's cockpit points (below) |
+| 2 | +9648, +10752 | `sub_82152D30` | `sub_82151F30` | Hood: eye (-length/10, height/2, 0) and target (length/2, height/2, 0) in car space, from block 2. Both players' in split screen |
+| 3 | +67744 | `sub_82156F08` | `sub_82153E40` | Not identified (one of the 1/60 users) |
+| 4 | +13360 | `sub_82153280` | `sub_82157380` (the chase camera inside it at +43136, then `sub_821542E0`, or `sub_82150D70` with +448 set) | TV cameras: the trackside zone the car is in (+452 zones of 1,064 bytes at +456) at +360 |
+| 5 | +56880 | `sub_82154C58` | `sub_821541E0` → `sub_82153A10` | Scripted camera: an animation (+352) of shots (608 bytes each, the list at +952); `sub_821537E8` evaluates one, its result's bit 0x20 ends it (+360 steps). The race intros and the rival intro (which draws the rival's logo) |
+
+The cockpit points: a table at `0x82608D20` (writable data, read live), 45 entries of 32 bytes, an eye and a target (x, y, z, 1) in car space (x forward, y up, z to the side), one per car model block (`docs/game_data.md`, "Car models": 0 RX7 ... 44 LEAD06). The block is the +48 of the car model item in the player car's scene (`sub_820C5B28`: kind 3, type 2). The right-hand-drive cars sit at z = -0.34 to -0.42; the left-hand-drive ECLI (19), WON04 (39) and LEAD04 (43) at +0.33; BOSS03 (26) at 0; CON_X (18) and BOSS20 (35) share theirs.
+
+| Address | Name | Status | Notes |
+|---|---|---|---|
+| `sub_82157188` | `RaceCamera::SetMode` | Overridden | r3 the member, r4 the mode: both viewports' mode (+1860) and the member's (+9628) set, `sub_82290970` on +68528, the viewports' rolls reset, the mode's camera started on the followed racer's car (+9636; mode 2 in split screen: one for each player). Wrapped by `src/subtick/camera_cuts.cpp` (a camera cut), which calls our C++. |
+| `sub_82157728` | `RaceCamera::Start` | Overridden | The race start's view from the options (`SaveOptions::camera_view`: 0 hood, 1 cockpit, 2 chase), hood in split screen (play mode 4 sets the split screen flag); with play mode 6, the followed racer from `sub_820FFED8`. Then SetMode, and the view kept at +9632. |
+| `sub_82157868` | `RaceCamera::Restore` | Overridden | The followed racer again, then the player 1 viewport's mode back to +9632 (SetMode on the next Update), or hood for both in split screen. |
+| `sub_821509F8` | `RaceCamera::ResetRolls` | Overridden | Both viewports' roll 0. |
+| `sub_82152A28` | `CockpitCamera::Start` | Overridden | r3 the camera, r4 the viewport, r5 the car: set up, the viewport's car-space defaults (eye (-0.32, 1, -0.3), target (1, 1, -0.3), up (0, 1, 0), +1744 (-0.8, 1.1, 0)), the car's pose taken. |
+| `sub_82151B18` | `CockpitCamera::Update` | Overridden | The field of view (55 degrees for the screen, `sub_82150A50`), near clip 0.1, roll 0; the car's cockpit points moved with the car (its rotation then its position) into the eye and target (and +1664), the up (0, 1, 0) turned with the car, the target turned about the up axis by the look angle (+1104), the reflection cube 1 m ahead of the eye. Our C++ falls back to the start's defaults if the car model isn't found (the original doesn't check). |
+| `sub_820AA460` | `CameraPass::SetFromViewport` | Overridden | r3 the pass, r4 the player, r5 the view: eye, target and up copied, `CameraPass::SetFov` (`sub_820AA330`) with the view's field of view, +388 and the roll, then `CameraPass::Update`. |
+| `sub_820AA288` | `Viewport::SetRoll` | Overridden | f1 brought into -pi..pi, written to every view's roll but view 18's; view 1 (the mirror) the other way. |
+| `sub_820AA320` | `Viewport::SetNearClip` | Overridden | f1 to camera pass 0's +384 (likely the near clip; 0.1 in the cockpit). |
+| `sub_821528E0` | `ChaseCamera::Update` | Wrapped | A camera cut when its reset (+380) is set (`src/subtick/camera_cuts.cpp`). |
+| `sub_82157380` | `TvCameras::Update` | Wrapped | A camera cut when the zone (+360) or kind (+448) changes. |
+| `sub_821541E0` | `ScriptedCamera::Update` | Wrapped | A camera cut at the update after its shot (+360) or animation (+352) changes. |
+| `sub_82153BE0`, `sub_82153CA8` | `ScriptedCamera::NextCamera`, `PreviousCamera` | Wrapped | From its vtable slot 1 (`sub_82154230`) on pad codes 164 and 163; a camera cut at its next update. |
+
 ### `native_car_models`
 
 The car models' set-ups, resets, small setters, copies and getters (`src/game/car_models.cpp`), generated from SBX's code and checked against the recompiled functions. The rest of the subsystem stays recompiled.
 
 | Address | Name | Status | Notes |
 |---|---|---|---|
-| `sub_820D04F0` | `LoadSlot::Reset` | Overridden | 6 stores. |
-| `sub_820EE9C8` | `TGAReader::TGAReader` | Overridden | 18 stores; calls `sub_820913F0`, `sub_820918D0`. |
-| `sub_820EEA30` | `TGAHeader::Clear` | Overridden | 12 stores. |
-| `sub_820EEBA8` | `TGAImage::Clear` | Overridden | 6 stores. |
+| `sub_820D04F0` | `LoadSlot::Reset` | Overridden | +0 = 0, +4 (the request) = -1, the size, buffer, shared flag and state 0. |
+| `sub_820EE9C8` | `TGAReader::TGAReader` | Overridden | The name emptied (`_Tidy`, assign ""), the header and image cleared, +32 = 0. |
+| `sub_820EEA30` | `TGAHeader::Clear` | Overridden | Every field 0 (+3, +9 left). |
+| `sub_820EEBA8` | `TGAImage::Clear` | Overridden | +4 to +24 = 0. |
+| `sub_820C3AF0` | `FreePagesAt` | Overridden | VirtualFree of `[r4]`. |
+| `sub_820C3D60` | `DeferRelease` | Overridden | r3 the first pool set, r4 to r7 a texture's four words: into the first of the set's 4 x (+12 + +40) release records (`[+52]`, 20 bytes) whose state is 0, state 2. |
+| `sub_820C4BD0` | `PlateImage` | Overridden | r3 the car scene, r4 a kind, r5 an index: the scene's TGA header (`+3732 + 20j`, j = 0, 4, 7, 11, 15 by kind + r5) copied to r6 and its pixels (`+3656 + 4j`) into `[r7]`. |
+| `sub_820D0518` | `LoadSlot::ReleaseBuffer` | Overridden | Its own pages freed (VirtualFree) and +16 = 0; a shared buffer is only let go. |
+| `sub_820D3998` | `TeamEmblem` | Overridden | r4 the car's block: the team emblem's sticker id for blocks 18 (178), 24-25 (167, 168), 27-35 (169-177), 36-40 (183-187), 41-44 (179-182), else -1. |
+| `sub_820D41A8` | `CarModel::Release` | Overridden | The node file's and bodies' pages released, `Skeleton::FreeNodeValues`, both sheets (+6684, +6700) put off, then `CarModel::Reset`. |
+| `sub_820D59C8` | `CarModel::ReloadDecals` | Overridden | The old sheet put off (`DeferRelease`), +4088 = 0, three layer and six sticker slots reset, a new sheet, the team emblem, `LoadDecals`. A record whose +3688 (car model +3720) is 1 (a plate image drawn into the sheet, `sub_820C4C60`) runs the original. |
+| `sub_820ECC00` | `Texture::Free` | Overridden | The header freed (VirtualFree) and the data (`XPhysicalFree`), each cleared when set. |
+| `sub_820ED268` | `CopyRect` | Overridden | Rows of 32-bit pixels copied (memcpy a row): r3 the target, r4 (x, y), r5 (width, height), r6's high word the target's pitch, r8 the source, r9 (x, y), the caller's stack +96 the source's pitch. |
+| `sub_820EE958` | `TGAReader::~TGAReader` | Overridden | The file and the pixels freed (VirtualFree), the name destroyed. |
+| `sub_820EEBC8` | `TGAImage::Free` | Overridden | Its pixels (+12) freed and cleared. |
+| `sub_820C8B88` | `CarScene::SetUp` | Overridden | r3 the scene, r4 the 48-byte record, r5 kept at +4996: state 3, the record's words and the pools' counts (+8 to +36), +40, +44; `PaintPalette::Init`; +5008, +5012 the archive's shared buffer (`0x82694E14`, `0x82694E10`) or the record's; `CarScene::LoadAssets`; each pool's objects VirtualAlloc'd (3,744, 37,296, 4,320, 11,680, 13,168, 16,800, 9,808, 5,120 bytes) and constructed on the list at +4896 + 12 x pool, their +20 the index; then `ScenePools::CreateA([+4992], r4)`. A failed allocation is skipped (the original stores the index at address 20). |
+| `sub_820D4448` | `CarModel::OnFileLoaded` | Overridden | Archive::Load's callback for set a (r3 the request, r6 the car model), in a 1,552-byte frame as the original's: sprintf of "<car>_inte_off" into +384. A body XPR2 (+3956 / +3980 the request): `XPR::Create` over its pages, the texture provider's slot 4, state 3, the pages freed; for the first, `CarModel::MakePlate` (the record's part order, 44 bytes by value: r7 to r10, the frame's +80 and +88) and the interior textures by name (+7232, and "..._0" 1 to 5 into +7236). The node file (+3732): the skeleton bound and posed, state 3, the tires', seats' and `acce_null` node matrices kept (+6720 to +7104, +7200), their positions turned a quarter about y and scaled 0.1 (+6976 to +7024, +7168, +7184 when all seven were found, +7216). A record that draws a plate image (+3720 = 1) runs the original for its first body. |
+| `sub_820D4C28` | `CarModel::OnFileLoadedB` | Overridden | The same for set b: "_inte_on", the XPR made over the request's buffer (the shared one), +3968 = 0 then state 3, nothing freed. |
+| `sub_820ED308` | `CarModel::MakePlate` | Overridden | r3 to r6 where textures A's and B's header and data go; the record's 11-word part order by value (W0 to W7 in r7 to r10, the first of each pair in the high word; W8, W9 at the caller's +80, W10 at +88; nothing further is read). Five of the car scene's images by W0 (`PlateImage` kinds 0, 2, 4, 3 and the base plate, kind 1, image W0 - 1 from 2) into its 1,168-byte frame; the 11 slots' places (`0x825F2AA0`, writable) sized from the images; both textures the base plate's size (`Texture::Create`), A's level 0 pitch (`GetSurfaceLevel`, `LockRect`, `UnlockRect`, `Resource::Release`); the base plate copied into both; then by slot (`CopyRect`): 0 the region's mark (30 x 33 from its sixth row) into B only; 1 the kana cell for W1 (bounds at `0x8200662C`, 12 a row); 2-4 W3-W5 (12 none); 5 the region cell W2 (6 a row); 6, 7, 9, 10 the digits W6, W7, W9, W10 (48 wide); 8 the separator (25 wide, from x 528) unless W8 is 12. Returns the frame's +192, as the original leaves it. |
+| `sub_820ECE20` | `Vinyl::DecalCorner` | Overridden | r3 out, r4 the corner, r5 the center, r6 the scale, r8 the offset, f1 the angle: ((p - c) s) turned by sin and cos (`sub_8258E140`, `sub_8258E218`, each rounded to a float), the cross terms fused (fmsubs, fmadds), then + c + t. |
+| `sub_820ECED8` | `SoftRaster::SampleTexel` | Overridden | r3 the image (+0 pixels, +4 width, +8 height, +12 pitch in bytes), f1, f2 u, v: bilinear: the four pixels at int(u), int(v) and the next (a negative index clamps both to 0, one past the end both to the last), mixed by the fractions times 256 (`[0x82001F84]`) along x then y. Conversions saturate as the generated fctiwz/fctidz. Returns the ARGB word; its conversion words below the caller's stack aren't written. |
 
 ### `native_car_physics` (tables)
 
@@ -1791,12 +2291,39 @@ The model animation' set-ups, resets, small setters, copies and getters (`src/ga
 
 | Address | Name | Status | Notes |
 |---|---|---|---|
-| `sub_8257EEF0` | `Skeleton::Skeleton` | Overridden | 2 stores; calls `sub_8257F918`. |
-| `sub_82580088` | `SkeletonBase::~SkeletonBase` | Overridden | 1 stores; calls `sub_8257FA00`. |
-| `sub_825866D8` | `TrackSet::TrackSet` | Overridden | 5 stores. |
-| `sub_82586FC0` | `RecordClear` | Overridden | 3 stores. |
-| `sub_82587638` | `TrackSet::Clear` | Overridden | 4 stores. |
-| `sub_825877D8` | `SkeletonCursor::Clear` | Overridden | 5 stores. |
+| `sub_8257EEF0` | `Skeleton::Skeleton` | Overridden | The base, +176 = 0, vtable `0x82069C30`. |
+| `sub_82580088` | `SkeletonBase::~SkeletonBase` | Overridden | The base's vtable, then Free. |
+| `sub_825866D8` | `TrackSet::TrackSet` | Overridden | Cleared, its values 0. |
+| `sub_82586FC0` | `RecordClear` | Overridden | A 12-byte record (a physical pad's +168, +180): +0 = 0.0, +4, +8 = 0. |
+| `sub_82587638` | `TrackSet::Clear` | Overridden | The section, its count and tracks 0, the start time 0.0. |
+| `sub_825877D8` | `SkeletonCursor::Clear` | Overridden | Its words 0, its start time 0.0. |
+| `sub_8257EF38` | `Skeleton::FreeNodeValues` | Overridden | +176 freed and cleared. |
+| `sub_8257EF98` | `Skeleton::LoadNodeValues` | Overridden | r4 the part file's +0x28 section: with node values, instance 0's cursor bound to it and each entry's node value (x and z its time, y its +16). |
+| `sub_8257F038` | `Skeleton::NodeCount` | Overridden | The node file's node count, 0 without node values. |
+| `sub_8257F058` | `Skeleton::UpdateMatrices` | Overridden | With node values, `Skeleton::UpdateNodeMatrices`. |
+| `sub_8257F070` | `Skeleton::ApplyAnimation` | Overridden | Each entry of instance 0's cursor: its node's channels sampled at the node's time (its value's z) into the node's state. |
+| `sub_8257F180` | `Skeleton::~Skeleton` | Overridden | The vtable, +176 freed, the base's destructor. |
+| `sub_8257F918` | `SkeletonBase::SkeletonBase` | Overridden | Vtable `0x82069C40`, +16 the identity, the view's first word cleared (`sub_82587918`), +128 to +160 cleared. |
+| `sub_8257FA00` | `SkeletonBase::Free` | Overridden | The cursors, node states, bone blocks and own matrices freed and cleared. |
+| `sub_82586710` | `TrackSet::Sample32` | Overridden | The same for 32-byte values, +20 the mask of the floats written. |
+| `sub_825867D8` | `TrackSet::Advance32` | Overridden | The same for 32-byte values. |
+| `sub_82586900` | `TrackSet::Setup32` | Overridden | As SetupFloat4 with 32-byte values (time +16). |
+| `sub_82586A60` | `PrimitiveDrawer::PrimitiveDrawer` | Overridden | Vtable `0x8206EFB4`, +4 a 4-byte block (operator new) for its declaration. |
+| `sub_82586D98` | `PrimitiveDrawer::SetShaders` | Overridden | Vtable slot 2: r5 its vertex shader (0 or 1), r6 its pixel shader (0 to 4) from the tables at `0x8297338C` and `0x829733A4` set on the device (r4). |
+| `sub_82586E88` | `PrimitiveDrawer::Draw` | Overridden | Vtable slot 3: its declaration set, `BeginVertices` for r7 24-byte vertices of type r5, r6 copied in (memcpy, the original's return address), `EndVertices`. |
+| `sub_82587120` | `TrackSet::ReleaseArray` | Overridden | Its values (a counted array) freed, +16 = 0. |
+| `sub_82587180` | `TrackSet::Setup208` | Overridden | As SetupFloat4 with 208-byte values (eleven rows' last floats 1.0), then each track's time (`sub_8258BDC8`) and set-up (`sub_82587020`), both recompiled. |
+| `sub_825872B8` | `TrackSet::Release` | Overridden | Its values (no header) freed, +16 = 0. |
+| `sub_82587318` | `TrackSet::SetupFloat` | Overridden | As SetupFloat4 with a float a track (no header). |
+| `sub_825873B8` | `TrackSet::SampleFloat4` | Overridden | r4 a track: its value (0, 0, 1), then each channel's curve (`Curve::Sample`) at the value's time into the float it names. |
+| `sub_82587498` | `TrackSet::Advance` | Overridden | r4 a track, f1 the step: the time + step, looped between the track's start and end; 1 when it looped. |
+| `sub_82587538` | `TrackSet::SetupFloat4` | Overridden | r4 the part file's +0x2C section: the old values freed, the section bound, a 16-byte value a track (counted; -1 bytes past `0x0FFFFFFF`) with +12 1.0, then each one's time the start time. |
+| `sub_82587658` | `TrackSet::Count` | Overridden | The track count, 0 with no section. |
+| `sub_825876E0` | `TrackSet::View` | Overridden | r4 a section or 0: the section, its track count's address (+16), its tracks (+20), its default start time (+4). |
+| `sub_82587800` | `SkeletonCursor::View` | Overridden | As TrackSet::View, +16 = 0. |
+| `sub_82587858` | `CursorCurve::Sample` | Overridden | r4 the keys, r5 the channel's key cursor, r6 the key count, f1 the time: before the first key or past the last their value; else from the cursor's pair on (wrapping) to the pair around the time, `Key::Interpolate` (recompiled). |
+| `sub_8258BE30` | `TrackSet::StartTime` | Overridden | r4 a track or -1: the track's +72 or the section's +4 in f1; 0.0 with no section. |
+| `sub_82586B20` | `PrimitiveDrawer::Init` | Overridden | Vtable slot 0, once at boot. Its vertex declaration from the elements at `0x8265B04C` (`CreateVertexDeclaration`, into its +4 block; `!! CREATE VERTEX DECLARATION ERROR !!` printed when it gives 0); then its two vertex shaders (`vs_3_0`, `main`, the 12-byte entries at `0x8297338C`) and five pixel shaders (`ps_3_0`, at `0x829733A4`): each compiled (`D3DXCompileShader`, answered by SBX's stored shaders, `src/hooks/shader_compiles.cpp`), the compiler's errors printed and released on a failure, the shader made from the buffer's microcode (`VertexShader::Create`, `PixelShader::Create`) into the entry's +8, the buffer released. A 160-byte frame as the original's (+84 where the errors go, +92 no constant table, the buffers at +96 and +100). |
 
 ### `native_models`
 
@@ -1805,17 +2332,42 @@ The models' set-ups, resets, small setters, copies and getters (`src/game/models
 | Address | Name | Status | Notes |
 |---|---|---|---|
 | `sub_820A0A88` | `Shaders::LoadAll` | Overridden | 1 stores; calls `sub_820A09D8`. |
-| `sub_820CE6E8` | `PartModel::PartModel` | Overridden | 9 stores; calls `sub_8257A1C0`. |
-| `sub_820CE750` | `PartModel::~PartModel` | Overridden | 9 stores; calls `sub_8257A858`. |
-| `sub_820CE788` | `PartModel::Clear` | Overridden | 8 stores. |
+| `sub_820CE6E8` | `PartModel::PartModel` | Overridden | `Model::Model`, the part's vtable `0x8200336C`, its own words cleared (+436 = -1). |
+| `sub_820CE750` | `PartModel::~PartModel` | Overridden | The vtable and its words again, then `Model::~Model`. |
+| `sub_820CE788` | `PartModel::Clear` | Overridden | +432 to +460 cleared, +436 = -1. |
 | `sub_820CE7B8` | `Model::SetVinylTextures` | Overridden | 2 stores. |
-| `sub_8256F240` | `SetSharedShaders` | Overridden | 2 stores. |
-| `sub_82574180` | `ScopedLock::ScopedLock` | Overridden | 1 stores; calls `sub_82574178`. |
-| `sub_825741B8` | `ScopedLock::~ScopedLock` | Overridden | No stores; calls `sub_8258C4A8`. |
-| `sub_8257A1C0` | `Model::Model` | Overridden | 7 stores; calls `sub_8257A150`, `sub_8257EEF0`, `sub_825866D8`. |
-| `sub_8257A858` | `Model::~Model` | Overridden | 1 stores; calls `sub_82579948`, `sub_8257A270`, `sub_8257CA60`, `sub_8257F180`, `sub_82587120`, `sub_825872B8`. |
-| `sub_8257C780` | `XPR::XPR` | Overridden | 6 stores. |
-| `sub_8257CA60` | `XPR::~XPR` | Overridden | No stores; calls `sub_8257C9C0`. |
+| `sub_8256F240` | `SetSharedShaders` | Overridden | r3, r4 the shared vertex and pixel shader tables, to `0x8296DC14` and `0x8296DC18`. |
+| `sub_82574180` | `ScopedLock::ScopedLock` | Overridden | r4 the lock, kept at r3 and taken. |
+| `sub_825741B8` | `ScopedLock::~ScopedLock` | Overridden | Its lock let go. |
+| `sub_8257A1C0` | `Model::Model` | Overridden | Vtable `0x82069AF8`, its XPR and XPR list (64 slots), skeleton and five track sets made, its words cleared. |
+| `sub_8257A858` | `Model::~Model` | Overridden | `Model::Release`, the track sets, the skeleton, the XPR list and the XPR, the last first. |
+| `sub_8257C780` | `XPR::XPR` | Overridden | The six words cleared. |
+| `sub_8257CA60` | `XPR::~XPR` | Overridden | `XPR::Release`'s C++. |
+| `sub_822A3150` | `TextureHeader::MipLevelCount` | Overridden | ((+44 >> 6) & 0xF) + 1. |
+| `sub_82354B30` | `Resource::Relocate` | Overridden | r3 a resource header, r4 the data's address: by its type (`sub_822A3788`), 1 adds r4 to +24 above its low 2 bits, 2 and 8 add it, 3 and 17-20 relocate a texture (mips too when +48 has an address); others nothing. |
+| `sub_8256F258` | `SharedVertexShader` | Overridden | r3 a pair: its entry of the shared vertex table, 0 before the table is set. |
+| `sub_8256F280` | `SharedPixelShader` | Overridden | The same for the pixel table. |
+| `sub_8256F2A8` | `VertexDeclaration` | Overridden | r3, r4, r5 a shape's three stream types: the kinds of the first and third (tables at `0x8264E960`, `0x8264E9A8`) pick a declaration from the tables around `0x8296DC54` by the second (9, 10, 5, 11); anything else prints `XLMDL::System::GetVertexDeclaration Error` and gives the default. |
+| `sub_82573EF8` | `PendingFrees::IncSize` | Overridden | The size + r4; past `0x3FFFFFFF` the original's `length_error` path. |
+| `sub_82573F98` | `PendingFrees::Insert` | Overridden | `std::list::_Insert`: r4 the node to insert before, r5 the value's address; a 12-byte node from operator new. r3 left the list. |
+| `sub_82574010` | `Memory::FreeLater` | Overridden | r3 a block: under the lock, when its header carries `XLMM`, the header put at the end of the pending frees (the `std::list` at `0x8296E1B4`), freed some frames later. |
+| `sub_82574098` | `Memory::FreePhysicalLater` | Overridden | As FreeLater, r4 (XMemFree's attributes) stored in the header first. |
+| `sub_82576800` | `PointerVector::Allocate` | Overridden | operator new(4 × r4); a count whose bytes overflow takes the original's path (never seen). |
+| `sub_825768C0` | `PointerVector::Clear` | Overridden | The end set to the start; returns the start. |
+| `sub_82579948` | `XPRList::~XPRList` | Overridden | The vtable, the vector cleared, its storage freed (operator delete), the words cleared. |
+| `sub_82579B98` | `PointerVector::InsertN` | Overridden | `_Insert_n(r4, r5, *r6)`: new storage of half again the capacity (at least the new size) with the front and back moved in, or the tail moved up in place (`memmove_s`, `copy_backward`), the copies stored. |
+| `sub_82579E70` | `PointerVector::Reserve` | Overridden | `reserve(r4)`: past `0x3FFFFFFF` `_Xlen`; below the capacity nothing; else new storage, the elements copied, the old storage freed. |
+| `sub_82579F48` | `PointerVector::At` | Overridden | `std::vector<T*>::at`: the element's address; `_Xran` (it throws) out of range. |
+| `sub_8257A0D0` | `PointerVector::Assign` | Overridden | `assign(r4, *r5)`: cleared, then InsertN at the start. |
+| `sub_8257A270` | `Model::Release` | Overridden | Its header copy, vertex data, shader pairs' four blocks and the pairs' table through FreeLater, its words cleared, its XPR released. |
+| `sub_8257A3D8` | `Model::MaterialCount` | Overridden | r4 a shape, r5 the group: the shape's material block's +8 (group 0) or +12. |
+| `sub_8257A420` | `Model::Material` | Overridden | r4 a shape, r5 an index, r6 the group: the material (group 1's after group 0's). |
+| `sub_8257F1D8` | `Skeleton::Bind` | Overridden | SetUp for one instance, then a Vector a node (+176; x, y, z 0.0). |
+| `sub_8257F2A8` | `Skeleton::ResetPose` | Overridden | With node values, each node's state back to the file's translation, angles and scale (and its +64 row with kind bit 0x40), then `Skeleton::ApplyAnimation`. |
+| `sub_82580098` | `SkeletonBase::SetUp` | Overridden | r4 a node file, r5 matrices or 0, r6 the instances (1 when not above 0): `SkeletonBase::Free`, a cleared cursor an instance, the file's view, a 144-byte state a node (counted array; the rows' last floats 1.0, the cursors 0), its own matrices unless given, a 64-byte block a bone (+52 = 1), +140 the first bone's state. |
+| `sub_82581AA8` | `Skeleton::UpdateNodeMatrices` | Overridden | The root's matrix × the skeleton's; in node order a plain node's (kind 4 or below) × its parent's with the translation row of the node it names, kinds 8 and 16 by `sub_82580E48` and `sub_82581540`; then the bones' (bit 0x80) × their parents'. `Matrix::Multiply` stays recompiled. |
+| `sub_82587928` | `NodeFile::View` | Overridden | r3 the view, r4 a node file: its sections' offsets made addresses, +36 = +32 + 16, +44 = the node count less the bone count. |
+| `sub_8257F410` | `Skeleton::LocalMatrices` | Overridden | With node values, each plain node's (kind 4 or below) angles wrapped into [-pi, pi] (pi with the angle's sign added, truncated turns of 2 pi taken off, fused) and stored back, its matrix the identity with the scale on the diagonal turned by RotateX, RotateY, RotateZ (each into the frame's matrix at +208 and multiplied in) and the file's matrix, its translation in row 3; then each bone's (bit 0x80) the same from its state without the scale or the wrap. A 384-byte frame as the original's. |
 
 ### `native_post_effects`
 
@@ -1941,6 +2493,21 @@ The scenery lists' set-ups, resets, small setters, copies and getters (`src/game
 | `sub_82146DD0` | `ModelList::LoadPoints` | Overridden | 24 stores; calls `sub_82146CD0`. |
 | `sub_82146EF8` | `PassDescription::SetBillboardPass` | Overridden | 2 stores. |
 | `sub_8256F6D8` | `SceneLights::RecordProjectors` | Overridden | 92 stores. |
+| `sub_8209BE60` | `PassDescription::Set` | Overridden | +0 = r4, +4 = r6.|new |
+| `sub_821460E0` | `ModelList::IsBEntryOn` | Overridden | r4 the entry: its bit in the race data's +24 (entries 0-2: 0x20, 0x40, 0x80; 3-7: 0x1-0x10; 8-11: 0x100-0x800).|new |
+| `sub_821461E8` | `ModelList::IsCEntryOn` | Overridden | r4 the entry: play mode 5 none; 3 (and 4 at a stage of type 0) entry 24; else entry 0-23 when the course layout is its (4-11, 14, 15, 12, 13, 0, 1, 3, 2, 16-23), none with camera flag 0x80, and 16-23 only with 0x20 or 0x40.|new |
+| `sub_821463A8` | `PointList::IsEntryOn` | Overridden | r4 the entry: none without race data, with camera flag 0x80 or play mode 5; race modes 4 and 7 entry n for course n (0-7); mode 3 entries 8-15 for courses 11-18, 16-19 for 21, 22, 19, 20.|new |
+| `sub_82146848` | `ModelList::Release` | Overridden | Each model in list order: Model::Release, then its vtable slot 0 with 1 (the deleting destructor) when not null.|new |
+| `sub_82146CD0` | `ModelList::Load` | Overridden | r4 a container: the list reset, then for each of its models (its first word, little-endian) a 448-byte scenery model (operator new, Model::Model, vtable 0x8200673C) loaded from its entry (DataFile::GetEntry, Model::Load) and put at the end; +0 the count.|new |
+| `sub_8228C7F0` | `Race::CourseLayout` | Overridden | No arguments: the race's layout, or -1: mode (race +0xCA1F4) 8 by the course (+4: 16-19, 23, 23, 22, 23); modes 3, 4, 7 or a stage of type 1 (`sub_820FFD38`) by the course (0-7: 16-23, 11-22: 4-15); mode 2 by the flags at +20.|new |
+| `sub_8256F4F0` | `VertexDeclarations::ForDepth` | Overridden | r3 a stream type: 11 gives `[0x8296DD30]`, others `[0x8296DD2C]`.|new |
+| `sub_8257AD90` | `Recorder::RecordSceneLights` | Overridden | A chunk on the command list (`[0x8296DD78]`): command 7 (pixel c0-c62): the view (`0x8264EA00`, Matrix::Copy), the eye (`0x8264EA40`), the directions (`sub_82571500`, recompiled), the projectors; then 36. Returns the command's slot.|new |
+| `sub_8257C660` | `Model::DrawShapeDepth` | Overridden | r4 the view-projection, r5 the world, r6 the shape, r7 the group (byte), r8 a mask, r9 a flag: nothing without meshes (+28) or out of view (IsShapeVisible); Recorder::RecordObject; a 2-slot queue entry (its own chunk); when the group has materials (the mesh's materials +8/+12): kinds 3 (the object's constants) and 4 (Model::RecordShapeDepth(model, shape, group 0/1, 0, mask, flag)), to the render queue (`[0x8296DD7C]` slot 4) with the key `[0x8296DD5C]` and f1 = minus the object's c3.z.|new |
+| `sub_82146618` | `SceneryModel::DrawShape` | Overridden | r4 the view-projection, r5 the world, r6 the shape, r7 the depth pass, r8 pixel c76, r9 the c86 range, r10 the shared pair offset: nothing without meshes (+28) or out of view; two 3-slot entries (one chunk), Recorder::RecordObject, RecordSceneLights; per group with materials (Model::MaterialCount): kinds 3, 3, 4 (SceneryModel::RecordShape(model, shape, group, 1, r8, r9, r10)) to the render queue: group 0 with `[0x8296DD6C]` at minus the object's depth (its c3.z), group 1 with `[0x8296DD60]` at it; with r7, a 2-slot entry: 3 and 4 (Model::RecordShapeDepth(model, shape, 0, 1, 0, 0)) with `[0x8296DD68]`. 208-byte frame.|new |
+| `sub_821468E8` | `PointList::Draw` | Overridden | r4 the entry, r5 the camera pass: its view-projection (+144) copied (memcpy) into a 512-byte frame at +288; model 0 (+436 = the list's +608 animations, +48 = +612 provider, +432 = 1) at each point of groups +616 to 2, model 1 at group 3's (16 bytes a point: x, y, z, the turn in degrees); a point with y below -1000 skipped; else identity, RotateY(w × 0.0174533), Multiply, RotateY(-pi/2), Multiply, MultiplyTranslation (the point, w 1), SceneryModel::DrawShape(model, +288, +80, 0, 0, 0, the range (10000, 50000, 0, 0), 0).|new |
+| `sub_8257C430` | `Model::DrawShape` | Overridden | As SceneryModel::DrawShape with Model::RecordShape (r8, r9 only) and the groups tested by the mesh's material counts.|new |
+| `sub_82145460` | `SceneryModel::RecordShape` | Overridden | r4 the shape, r5 the group, r6 set the shaders, r7 pixel c76, r8 the c86 range, r9 the shared pair offset: 0 without materials; one chunk: the vertex declaration (`sub_8256F2A8`), 2 or 3 streams, a skinned mesh's indices, samplers 0-3's state 28 (the mesh's +432), 16/20 = 4 and 36 = 3; each material: shaders (own pair, or shared + r9), vertex c9-c13 (texture colors, material animation), the model's slot 1 hook (shape, index, &c13, &blend), pixel c63-c67, the blend (table 0x82008DAC), group 0's 96/100, cull, textures (the provider's slot 5; animated through AnimationSet::CurrentFrame) with sampler states 0, 4 and 24 (the model's +432), environment textures (flags 0x2: slot 6, 0x4: slot 5, stage 6), c86/c76, the draw, c86/c76 put back (0x8264EA80, 0x8264EA90); samplers' 16/20 back to 1; 36. 304-byte frame (+80 blend, +84 header, +96 c67, +112 c64).|new |
+| `sub_82571500` | `SceneLights::RecordDirections` | Overridden | r3 the constants (35 vectors): the 3 sun directions at 0x8296DDB0 normalized, 8 + 8 colors (0x8296DE40, 0x8296DEC0) copied, the 8 projector directions at 0x8296E040 normalized, their 8 colors (0x8296E0C0) copied. Normalized: xyz length's reciprocal square root with one Newton step, all four lanes scaled; zero length gives zeros; in the vector unit's own steps (flush mode on), bit for bit.|new |
 
 ### `native_sound_cues`
 
@@ -1967,9 +2534,52 @@ The stand models' set-ups, resets, small setters, copies and getters (`src/game/
 
 | Address | Name | Status | Notes |
 |---|---|---|---|
-| `sub_820D8BE0` | `Wheels::SetTireTextures` | Overridden | No stores; calls `sub_820D1420`. |
-| `sub_820E7058` | `SceneWheels::SetTireGrades` | Overridden | 2 stores; calls `sub_820D8B88`, `sub_820D8BE0`. |
-| `sub_820DEF68` | `SceneParts::LightValue` | Overridden | The float (f1) at +27664. |
+| `sub_820D8BE0` | `Wheels::SetTireTextures` | Overridden | PartModel::SetTexture on the front and rear tires with their grades, every pass. |
+| `sub_820E7058` | `SceneWheels::SetTireGrades` | Overridden | The front and rear grades (r4, r5) into its record, Wheels::SetRecord, then SetTireTextures. |
+| `sub_820DEF68` | `SceneParts::LightValue` | Overridden | f1 = the parts points' float after the headlights (+27664). |
+| `sub_820D9C08` | `SceneModel::ApplyInterior` | Overridden | SceneInterior::SetRecord on its interior (+5068) with its interior record (+3804). |
+| `sub_820E34A8` | `SceneInterior::SetRecord` | Overridden | The 120-byte record copied (memcpy) to +40 and to the copy at [+36] + 28. |
+| `sub_820E6F68` | `SceneWheels::SetSizes` | Overridden | +104 = r4, +108 = r5, the front and rear sizes (12 bytes each in r6:r7 and r8:r9) into +76 and +88, then Wheels::SetRecord. |
+| `sub_820E6FF8` | `SceneWheels::SetWord68` | Overridden | The wheels record's +68 = r4, then Wheels::SetRecord. |
+| `sub_820E7010` | `SceneWheels::SetCaliperTexture` | Overridden | The calipers' texture (+88 of the record) = r4, Wheels::SetRecord and SetCaliperTexture. |
+| `sub_82176BE8` | `GarageStage::FitAxles` | Overridden | Car::SetupVehicle of the car into a car data on the 1,968-byte frame; its two axles' first three floats into the stage's +6176 and +6192 (w 1.0). |
+| `sub_82176F10` | `GarageStage::ReloadDecals` | Overridden | SceneModel::ReloadDecals on the stage's model. |
+| `sub_82176F50` | `GarageStage::SetPart` | Overridden | The parts record's word for slot r4 (0 to 15; 6 and 7, 8 and 9 share; 13 none) = r5, then ApplyRecord. |
+| `sub_82177038` | `GarageStage::SetInteriorClass` | Overridden | The interior's class (+3808): 0 below 3, 1 below 7, else 2. Not re-applied; returns the model. |
+| `sub_821770A0` | `GarageStage::SetInteriorWord` | Overridden | Kind r4 1, 4 or 5: +3908, +3900 or +3896 = r5; then ApplyRecord. |
+| `sub_82177120` | `GarageStage::SetWheelExtras` | Overridden | +4136 = r4, +4156 = r5, each given to the wheels (SetWord68, SetCaliperTexture). |
+| `sub_82177180` | `GarageStage::SetTireGrade` | Overridden | The front (1), rear (2) or both (0) tires' grade (+4080, +4096) = r5; then SceneWheels::SetTireGrades. |
+| `sub_82177210` | `GarageStage::SetInteriorLevel` | Overridden | +3908 = 0, 1 or 2 by r4 (below 3, below 6); +3912 = 0 below 1, else 1; then ApplyRecord. |
+| `sub_821772A0` | `GarageStage::SetInteriorPair` | Overridden | The interior's part index (+3904) = r4, +3900 = r5; then ApplyRecord. |
+| `sub_82177300` | `GarageStage::SetAccessory` | Overridden | The interior's accessory (+3916) = r4 and +3920 = r5, then SceneModel::ApplyInterior. |
+| `sub_82177360` | `GarageStage::SetChoice` | Overridden | The interior's choice r4 (+3812 + 12 x r4) = (1, r5, r6); then ApplyRecord. |
+| `sub_821773C8` | `GarageStage::ClearChoice` | Overridden | The interior's choice r4 off; then ApplyRecord. |
+| `sub_82177420` | `GarageStage::SetDecalWord` | Overridden | +3736 = r4, then SceneModel::ReloadDecals. |
+| `sub_82177470` | `GarageStage::SetLightsOn` | Overridden | r4 set: +4976 = 1, +4980 = 0.0; else +4976 = 0, +4980 = the parts' light value. Returns the model. |
+| `sub_821774F8` | `GarageStage::SetAero` | Overridden | The car record's +3680 word (+3728) = r4; then ApplyRecord. |
+| `sub_82177548` | `GarageStage::SetAero2` | Overridden | +3732 = r4; then ApplyRecord. |
+| `sub_821775E8` | `GarageStage::SetWord5016` | Overridden | The model's +5016 = r4. |
+| `sub_82177630` | `GarageStage::ClearLightKit` | Overridden | The light kit's group r4 (0 to 2, 3 all) texture word cleared, then SceneModel::ApplyLightKit. |
+| `sub_821777F8` | `GarageStage::SetParts` | Overridden | Six parts record words from r4 to r9, the aero set's word 0, then ApplyRecord. |
+| `sub_82177868` | `GarageStage::SetDecalA` | Overridden | Decal r4 (0 to 2: layer 2, 1, 0): r5, r6 (the flip), f1 and f2 (position), f3 (angle), f4 (size; its x mirrored by the flip). Returns the model. |
+| `sub_82177928` | `GarageStage::SetDecalB` | Overridden | As SetDecalA on layers 5, 4, 3. |
+| `sub_821779E8` | `GarageStage::AddSecondWheels` | Overridden | SceneModel::AddSecondWheels on the stage's model. |
+| `sub_82177A28` | `GarageStage::ApplyWheelPaint` | Overridden | SceneModel::ApplyWheelPaint on the stage's model. |
+| `sub_82177A68` | `GarageStage::SetWheelWord` | Overridden | The wheels record's +8 (+4076) = r4. |
+| `sub_82177C98` | `GarageStage::SecondWheelsPending` | Overridden | The model's +5032. |
+| `sub_821790C8` | `GarageStage::SetColor0` | Overridden | (f1, f2, f3, 1.0) into the car record's first paint color (+64), then SceneModel::ApplyPaint. |
+| `sub_82179158` | `GarageStage::SetColor1` | Overridden | As SetColor0 on the second color (+80). |
+| `sub_821791E8` | `GarageStage::SetColor2` | Overridden | As SetColor0 on the third color (+96). |
+| `sub_82179278` | `GarageStage::SetColor3` | Overridden | As SetColor0 (+64), then SceneModel::ApplyWheelPaint. Never passed by the game. |
+| `sub_82179308` | `GarageStage::SetColor4` | Overridden | As SetColor1 (+80), then ApplyWheelPaint. Never passed. |
+| `sub_82179398` | `GarageStage::SetColor5` | Overridden | As SetColor2 (+96), then ApplyWheelPaint. Never passed. |
+| `sub_82179428` | `GarageStage::SetSticker` | Overridden | Sticker r5 of area r4 (layer 6 x (area + 1) + slot; other areas the last group): its kind by the area, r6, r7, the position in r8:r9, f1, the size at the caller's r1 + 96. Returns the model. |
+| `sub_8217BAA8` | `GarageStage::SetAeroSet` | Overridden | The selected garage car's body kit (Params::GetCarParts, AeroParts::Get82 of r4 + 1, on the 224-byte frame); the aero sets' entry (0x82009990, 24 bytes, by the model's block and r4) into the parts record (-1 kept; the fifth and sixth from r5, r6); +3768 = r4 + 1 when the kit's word +24 has 8. Then ApplyRecord. |
+| `sub_8217BC20` | `GarageStage::SetWheel` | Overridden | Wheel r4 (0 the spec's stock wheel, above 178 the last; its model from the 179-entry table) on the front (1), rear (2) or both (0): the models, colors (hue, saturation and value / 255) and two floats into the record; the car's (r6) tire sizes (rim, width x 1000, profile x 100); FitAxles, SetSizes. Runs on the original's 3,120-byte frame. A negative r4 runs the original. |
+| `sub_821CADC8` | `TuningScreen::StepSecondWheels` | Overridden | Not pending and step (+25244) 1: AddSecondWheels, step 2; else not pending and step 2: ApplyWheelPaint, step 0. |
+| `sub_821CAF70` | `TuningScreen::SetTireGrade` | Overridden | Tire choice r5 (0 to 4) as grade 0, 1, 1, 2, 2 for r4 0 to 2; else nothing. |
+| `sub_821DDE78` | `TuningScreen::PreviewWheel` | Overridden | The selected garage car copied into a car on the 4,016-byte frame (Car::Init, 1,880 bytes, flags +3888|= 1, Car::Refresh), then SetWheel. |
+| `sub_8217DB98` | `GarageStage::MakeModel` | Overridden | Unless the stage has its model (+16): a record on its 4,384-byte frame (+80; cleared, constructed, reset, its block = r4), pool 7 claimed into the stage's +8 and set up from it; the model's +4296 and the stage's +6056 = r5, +16 = 1, `[0x826C7E88]`'s +20 = 1. The record's bytes its reset leaves are 0 (the original's were stack leftovers; the one the model keeps, the cockpit record's +20, is never read before it's set). |
 
 ### `native_strings_and_font` (tables)
 
@@ -1977,8 +2587,8 @@ More of the strings and font (`src/game/strings_and_font.cpp`): set-ups, resets,
 
 | Address | Name | Status | Notes |
 |---|---|---|---|
-| `sub_8210A888` | `Text::Draw` | Overridden | No stores; calls `sub_8210A530`. |
-| `sub_8210AF20` | `Text::Load` | Overridden | No stores; calls `sub_821095B8`, `sub_8210AA00`. |
+| `sub_8210A888` | `Text::Draw` | Overridden | r4 the style, r5 the text: Font::Draw's C++ on the font.|moves from `native_strings_and_font (tables)` |
+| `sub_8210AF20` | `Text::Load` | Overridden | Font::Load's C++ (pages 0-3), then Strings::Load (`sub_8210AA00`, files 0 and 15).|moves from `native_strings_and_font (tables)` |
 
 ### `native_track_collision`
 
@@ -2321,10 +2931,33 @@ they only call the original. `sub_820F5F48` and `TickHandler::Invoke`
 | `0x820069B0` | Music bank names | 18 strings, 12 bytes apart (`BGM_SYSTEM`, `bgm_tmp_17` down to 01 without 10, then 10), read by `Bgm::Load`. |
 | `[0x826B5960]` | The sound object | `Bgm::Load` calls its vtable slot 4 to load a bank pair. |
 | `0x82609334` | Music table | 13 name pointers: `bgm_tmp_06`, 07, 01, 15, 05, 10, 03, 09, 17, 11, 16, 14, 08. Read by `Music::PlayRoaming`, `Music::PlayRequested`, `sub_82174AD0`. |
-| scene+9644, +9652 | Music request bits, music mode | The scene the music handlers run on (`sub_82175238`): +9644 the bits `Music::RequestBattle` sets and `Music::PlayRequested` plays; +9652 the mode `Music::PlayRoaming` reads. |
+| scene+9644, +9652 | The race sounds' state bits, play mode | The scene the race sounds' handlers run on (`sub_82175238`): +9644 the bits `Music::RequestBattle` sets and `Music::PlayRequested` plays, and the music change and car bits (`docs/audio.md`); +9652 the race data's play mode, which `Music::PlayRoaming` reads. |
 | `[0x826B2B28]` | Parameter tables | +8 BUILD 73 (wheels), +12 BUILD 72 (car specs), +16 to +48 BUILD 74-82 (aero parts), +56 the car count. Built by `sub_820C9700`, loaded by `sub_820CC048`. |
 | car+1644 | A car object's tuning | +8 engine stage, +16 to +60 the power and drive-train part levels, +64 to +92 tires and wheels, +96 to +136 the aero part levels (`docs/game_data.md`, "How the game uses the car specs"). |
 
 ## Known issues
 
 - None recorded yet.
+
+
+### `native_options_load_save`
+
+Our own C++ behind `--native_options_load_save` (`docs/native-code.md`).
+
+| Address | Name | Status | Notes |
+|---|---|---|---|
+| `sub_821B8458` | `LoadPage::Close` | Overridden | Sub-page 4: the page left by step 41; +760 = 1. |
+| `sub_821B8998` | `SavePage::Close` | Overridden | As the load's, step 42. |
+| `sub_821B89E0` | `OptionsSavePages::Cancel` | Overridden | Sub-page 5 of both pages: +760 = 1. |
+| `sub_821B9C38` | `SavePage::SetDialog` | Overridden | As the load's for page 10 (steps 47, 46; +692, +696). |
+| `sub_821B9D88` | `LoadPage::SetDialog` | Overridden | r3 the kind, r4 the dialog (0 question, 1 note, 2 wait): with a dialog, the page shown again (steps 44, 43) on its sub-page; the kind kept (+676). |
+| `sub_821BA160` | `LoadPage::CheckDevice` | Overridden | Sub-page 0: unless the selector is up, the wait with a device, else question 7. |
+| `sub_821BA1B8` | `LoadPage::DeviceAnswer` | Overridden | Sub-page 6: by GameData::Find, note 10 (the failure acknowledged) or 11. |
+| `sub_821BA210` | `SavePage::CheckDevice` | Overridden | As the load's, question 11 with no device. |
+| `sub_821BA268` | `SavePage::Wait` | Overridden | Sub-page 3: after 90 ticks, the check's answer (GameData::Check) or the save's end (a failure's note, acknowledged, or note 9). |
+| `sub_821BACF8` | `LoadPage::Answer` | Overridden | Sub-page 1: the question's answer by its kind (load the game data, ask for a device, close). |
+| `sub_821BAE88` | `LoadPage::Note` | Overridden | Sub-page 2: a note; kind 3 asks for a device by itself after 45 ticks. |
+| `sub_821BAFB8` | `SavePage::Answer` | Overridden | Sub-page 1: as the load's (save the game data, ask for a device, close). |
+| `sub_821BB168` | `SavePage::Note` | Overridden | Sub-page 2: as the load's. |
+| `sub_821C4A10` | `LoadPage::Leave` | Overridden | Step 41: the options movie's leave (labels 841 and 843 + the cursor, animation 10), then back to page 0 and the save buffers freed. |
+| `sub_821C4AF8` | `SavePage::Leave` | Overridden | Step 42: as the load's (labels 857 and 859 +, animation 11). |

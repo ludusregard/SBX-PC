@@ -10,14 +10,14 @@
 
 #include "game/replay_snapshots.h"
 
-#include <rex/cvar.h>
+#include "base/settings.h"
 
 #include <cstring>
 
-REXCVAR_DEFINE_BOOL(native_replay_snapshots, true, "SBX",
-                    "Our own C++ for the race snapshots' copies (the bodies' states, the cars' "
-                    "parts and members, the track positions) instead of the recompiled "
-                    "functions; the replay's own save and restore stay recompiled");
+SBX_SETTING_BOOL(native_replay_snapshots, true, "Overrides", "Race",
+                 "Our own C++ for the race snapshots' copies (the bodies' states, the cars' "
+                 "parts and members, the track positions) instead of the recompiled "
+                 "functions; the replay's own save and restore stay recompiled");
 
 namespace {
 
@@ -36,7 +36,7 @@ using game::Vehicle;
 using guest::At;
 using guest::Guest;
 
-bool On() { return REXCVAR_GET(native_replay_snapshots); }
+bool On() { return SBX_GET(native_replay_snapshots); }
 
 // A field's bytes copied (the floats by their bits).
 template <typename T>

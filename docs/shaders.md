@@ -7,11 +7,12 @@ shader in `sbx_pc/src/renderer/vulkan/glsl/game/`, made by
 The part files' shaders (the cars' and the course objects' materials) have
 their own page for the mod tool: `docs/part_shaders.md`.
 
-Status (2026-11-13): all 121 shaders found so far are ported (27 vertex, 94
+Status (2026-11-18): all 135 shaders found are ported (30 vertex, 105
 pixel). Each port was run against the SDK's translation of the same
 microcode with random inputs, and every pixel and vertex output matched bit
 for bit (`tools/shader_port/check`). The renderer uses them with
-`--native_shaders` (off by default until it's been tried in the game).
+`--native_shaders` (on by default since 2026-11-18;
+`--native_shaders=false` translates the microcode instead).
 
 The ports are the reference. The shaders the renderer ships are all
 hand-written GLSL that says what the shader does instead of what the
@@ -272,6 +273,34 @@ scaled back to its total. Both are specialization constants (10 and 11,
 set in `shader_ports.cpp`), so at 1 the shaders are the game's.
 **Boot** (`boot/`): sprites, the font (one
 texture channel as alpha), a depth view and a hue gradient.
+
+**Menu texture filtering** (`boot/menu_filter.glsl`,
+`--menu_texture_filtering`; recommended above the original 720p). The
+game draws the UI movies' pictures (the XMD screens, the HUD)
+point-sampled: the UI movie drawer (`sub_825831C8`, `sub_82583790`) sets
+sampler 0's mag and min filters to linear only when its movie's context
+flag (movie+172, context +108, copied down the scene by `sub_825830F0`) is
+set, and the game never sets it. That is 1:1 at 720p and blocky above it.
+The two textured sprite variants sample through `sample_menu`: with the
+setting on, where the fetch constant asks for point on mag and min, it
+reads the 4 nearest texels through the game's own sampler (so its clamp or
+wrap still applies) and blends them bilinearly, colors weighted by alpha so
+transparent texels don't darken cut-out edges. The renderer sets the
+system constants' `point_vertex_diameter_min` (`sbx_sprite_mode`, which no
+port reads) to 1 for those two shaders' draws only; samplers and the
+game's state are left as they are. The fonts already draw linear and
+aren't changed.
+
+**Distance-field font** (`boot/font_sdf.glsl`). A font file sbxr_tools'
+`font_upscale layout` makes has a third container file, its SBXF
+(`docs/game_data.md`, "Font"), saying its sheet holds signed distance
+fields. `src/hooks/font.cpp` reads it at `Font::LoadSheet` and gives the
+renderer the sheet's address and spread (`Renderer_SetDistanceFieldFont`).
+For the four font shaders' draws of that sheet the renderer sets
+`sbx_sprite_mode` to 2, the spread in 1/256 sheet pixels from bit 8, and
+`sprite.frag`'s font variants turn the sampled distance into coverage over
+one screen pixel (`fwidth` of the sheet's texels), so text is sharp at any
+resolution. Other fonts and sheets draw as before.
 
 **Vertex shaders** (`vertex/`, all 30). The game patches each vertex fetch
 for the vertex layout in use (stride, offsets, formats), and the renderer

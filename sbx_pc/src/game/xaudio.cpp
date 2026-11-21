@@ -3,13 +3,12 @@
 // down, the reverb's defaults, the codecs' packet lists, and the library's
 // allocation calls. The mixer and the codecs' decoding stay recompiled.
 
+#include "base/settings.h"
 #include "game/guest_types.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_xaudio, true, "SBX",
-                    "Our own C++ for the XAudio library's constructors, destructors and small "
-                    "set-ups instead of the recompiled functions");
+SBX_SETTING_BOOL(native_xaudio, true, "Overrides", "Audio",
+                 "Our own C++ for the XAudio library's constructors, destructors and small "
+                 "set-ups instead of the recompiled functions");
 
 namespace {
 
@@ -104,7 +103,7 @@ struct Voice {
   u32_be format_words[2];
 };
 
-bool On() { return REXCVAR_GET(native_xaudio); }
+bool On() { return SBX_GET(native_xaudio); }
 
 void InitRing(PacketLists::Ring& ring) {
   ring.next = AddressOf(&ring);

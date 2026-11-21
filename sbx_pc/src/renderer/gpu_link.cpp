@@ -19,8 +19,8 @@
 #include "renderer/renderer.h"
 #include "renderer/state.h"
 
-#include "base/flags.h"
 #include "base/log.h"
+#include "base/settings.h"
 
 #include <array>
 #include <atomic>
@@ -29,10 +29,12 @@
 #include <mutex>
 #include <string>
 
-ITC_FLAG_BOOL(native_renderer_log_gpu, false, "SBX",
-              "Log what the graphics library hands the GPU that has effects outside it "
-              "(memory writes, interrupts, waits, swaps), and the GPU's progress (a "
-              "debugging aid for the native renderer's exclusive mode)");
+#include <fmt/format.h>
+
+SBX_SETTING_BOOL(native_renderer_log_gpu, false, "Logging", "Native Renderer",
+                 "Log what the graphics library hands the GPU that has effects outside it "
+                 "(memory writes, interrupts, waits, swaps), and the GPU's progress (a "
+                 "debugging aid for the native renderer's exclusive mode)");
 
 namespace renderer {
 namespace {
@@ -488,7 +490,7 @@ void LogEffects() {
 extern "C" REX_FUNC(sub_8229BDA8) {
   REX_FUNC_PROLOGUE();
   using namespace renderer;
-  if (ITC_FLAG(native_renderer_log_gpu)) {
+  if (SBX_GET(native_renderer_log_gpu)) {
     uint32_t device = ctx.r3.u32, pairs = ctx.r4.u32, count = ctx.r5.u32;
     std::lock_guard lock(g_mutex);
     Stats& s = g_stats;
@@ -529,7 +531,7 @@ extern "C" REX_FUNC(sub_8229BDA8) {
     uint32_t device = ctx.r3.u32, pairs = ctx.r4.u32, count = ctx.r5.u32;
     g_effects.kicks++;
     if (uint32_t cpu = guest::LoadU8(base, ctx.r13.u32 + 268);
-        cpu != 1 && ITC_FLAG(native_renderer_log_gpu) && g_tiling_logs > 0) {
+        cpu != 1 && SBX_GET(native_renderer_log_gpu) && g_tiling_logs > 0) {
       g_tiling_logs--;
       std::string buffers;
       for (uint32_t i = 0; i < count; i++) {
@@ -560,7 +562,7 @@ extern "C" REX_FUNC(sub_8229BDA8) {
 namespace renderer {
 namespace {
 bool TilingLog() {
-  return ITC_FLAG(native_renderer_log_gpu) && g_tiling_logs.fetch_sub(1) > 0;
+  return SBX_GET(native_renderer_log_gpu) && g_tiling_logs.fetch_sub(1) > 0;
 }
 uint32_t Cpu(PPCContext& ctx, uint8_t* base) {
   return guest::LoadU8(base, ctx.r13.u32 + 268);

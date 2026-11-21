@@ -11,14 +11,13 @@
 // addresses, as the original makes them (guest_call::InFrame).
 
 #include "game/race_scene.h"
+#include "base/settings.h"
 #include "hooks/guest_call.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_race_scene, true, "SBX",
-                    "Our own C++ for the race scene (its object, light set, the post effects' "
-                    "glow and color parameters, the pause toggle) instead of the recompiled "
-                    "functions; the scene machine's set-up stays recompiled");
+SBX_SETTING_BOOL(native_race_scene, true, "Overrides", "Race",
+                 "Our own C++ for the race scene (its object, light set, the post effects' "
+                 "glow and color parameters, the pause toggle) instead of the recompiled "
+                 "functions; the scene machine's set-up stays recompiled");
 
 namespace {
 
@@ -188,7 +187,7 @@ void DestroyCars(Guest& g, SceneCars* cars) {
 
 #define SBX_RACE_SCENE_FALLBACK(name)     \
   REX_FUNC_PROLOGUE();                    \
-  if (!REXCVAR_GET(native_race_scene)) {  \
+  if (!SBX_GET(native_race_scene)) {  \
     __imp__##name(ctx, base);             \
     return;                               \
   }                                       \

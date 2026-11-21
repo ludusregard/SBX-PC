@@ -28,20 +28,20 @@
 
 #include "subtick/input.h"
 
+#include "base/settings.h"
 #include "subtick/game_messages.h"
 
-#include <rex/cvar.h>
 #include <rex/logging.h>
 
 #include <algorithm>
 #include <chrono>
 #include <string>
 
-REXCVAR_DECLARE(bool, subtick);
+SBX_SETTING_DECLARE(bool, subtick);
 
-REXCVAR_DEFINE_BOOL(subtick_input, true, "SBX",
-                    "With --subtick: sample the player's steering, throttle and brake on every "
-                    "frame and feed them to the car's two physics steps a tick");
+SBX_SETTING_BOOL(subtick_input, true, "Graphics", "Frame Rate",
+                 "With --subtick: sample the player's steering, throttle and brake on every "
+                 "frame and feed them to the car's two physics steps a tick");
 
 namespace subtick {
 
@@ -105,7 +105,7 @@ uint32_t g_mapper_list = 0;  // sub_8210B140's r3
 bool g_refreshing = false;
 
 bool Active() {
-  return REXCVAR_GET(subtick) && REXCVAR_GET(subtick_input);
+  return SBX_GET(subtick) && SBX_GET(subtick_input);
 }
 
 int32_t Clamp(int64_t v) {
@@ -303,7 +303,7 @@ using subtick::g_players;
 extern "C" REX_FUNC(sub_82099700) {
   REX_FUNC_PROLOGUE();
   subtick::g_manager = ctx.r3.u32;
-  if (REXCVAR_GET(subtick) && subtick::GameMessages_IsRenderOnlyPass()) {
+  if (SBX_GET(subtick) && subtick::GameMessages_IsRenderOnlyPass()) {
     return;
   }
   __imp__sub_82099700(ctx, base);
@@ -318,7 +318,7 @@ extern "C" REX_FUNC(sub_8210B140) {
   REX_FUNC_PROLOGUE();
   if (!subtick::g_refreshing) {
     subtick::g_mapper_list = ctx.r3.u32;
-    if (REXCVAR_GET(subtick) && subtick::GameMessages_IsRenderOnlyPass()) {
+    if (SBX_GET(subtick) && subtick::GameMessages_IsRenderOnlyPass()) {
       return;
     }
   }

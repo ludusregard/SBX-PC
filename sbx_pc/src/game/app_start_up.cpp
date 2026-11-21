@@ -2,13 +2,12 @@
 // default): the app's globals set, an app camera entry's constructor, two
 // words cleared and two getters.
 
+#include "base/settings.h"
 #include "game/guest_types.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_app_start_up, true, "SBX",
-                    "Our own C++ for the app start-up's globals, the app camera entry's "
-                    "constructor and two getters instead of the recompiled functions");
+SBX_SETTING_BOOL(native_app_start_up, true, "Overrides", "Runtime",
+                 "Our own C++ for the app start-up's globals, the app camera entry's "
+                 "constructor and two getters instead of the recompiled functions");
 
 namespace {
 
@@ -36,7 +35,7 @@ struct AppObject {
   u32_be unknown_112;
 };
 
-bool On() { return REXCVAR_GET(native_app_start_up); }
+bool On() { return SBX_GET(native_app_start_up); }
 
 }  // namespace
 

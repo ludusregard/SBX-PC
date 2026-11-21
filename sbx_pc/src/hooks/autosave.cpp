@@ -43,6 +43,7 @@
 
 #include "hooks/autosave.h"
 
+#include "base/settings.h"
 #include "guest.h"
 #include "hooks/native_calls.h"
 
@@ -50,18 +51,17 @@
 #include "renderer/vulkan/overlay.h"
 #endif
 
-#include <rex/cvar.h>
 #include <rex/logging.h>
 
 #include <chrono>
 #include <cstdio>
 
-REXCVAR_DEFINE_BOOL(autosave, false, "SBX",
-                    "Save the game when back at the garage's top menu after racing, or after "
-                    "the tuning shop, car setup, car shop, garage car or number plate menu");
-REXCVAR_DEFINE_BOOL(log_autosave, false, "SBX",
-                    "Diagnostic: log the garage menus' state changes and messages, and the "
-                    "autosave's save calls (to confirm the ids autosave uses)");
+SBX_SETTING_BOOL(autosave, false, "Hooks", "Saves",
+                 "Save the game when back at the garage's top menu after racing, or after "
+                 "the tuning shop, car setup, car shop, garage car or number plate menu");
+SBX_SETTING_BOOL(log_autosave, false, "Logging", "Game",
+                 "Diagnostic: log the garage menus' state changes and messages, and the "
+                 "autosave's save calls (to confirm the ids autosave uses)");
 
 namespace {
 
@@ -124,7 +124,7 @@ void Notify(const char* text) {
   (g_in_autosave = true, ctx.r3.u64 = 0, function(ctx, base), g_in_autosave = false, ctx.r3.u32)
 
 void MarkPending(const char* reason) {
-  if (!REXCVAR_GET(autosave)) {
+  if (!SBX_GET(autosave)) {
     return;
   }
   if (g_phase == Phase::kSaving) {
@@ -154,7 +154,7 @@ void Step(PPCContext& ctx, uint8_t* base) {
     return;
   }
   g_last_poll = now;
-  const bool log = REXCVAR_GET(log_autosave);
+  const bool log = SBX_GET(log_autosave);
   const auto elapsed = [&] {
     return std::chrono::duration_cast<std::chrono::milliseconds>(now - g_phase_start).count();
   };
@@ -233,7 +233,7 @@ void OnBackAtTop() {
 namespace hooks {
 
 void Autosave_OnGarageTopLoadStep(uint32_t garage_top) {
-  if (garage_top != g_garage_top && REXCVAR_GET(log_autosave)) {
+  if (garage_top != g_garage_top && SBX_GET(log_autosave)) {
     REXLOG_INFO("autosave: the garage top is {:08X}", garage_top);
   }
   g_garage_top = garage_top;
@@ -251,14 +251,14 @@ void Autosave_OnRaceDrawn() {
 
 namespace hooks {
 
-bool Autosave_Watching() { return REXCVAR_GET(autosave) || REXCVAR_GET(log_autosave); }
+bool Autosave_Watching() { return SBX_GET(autosave) || SBX_GET(log_autosave); }
 
 // After StateTable::Dispatch (sub_82106410) ran for `object` with message
 // `id` in state `before`; ctx.r3 is its result (the table entry), kept.
 void Autosave_OnDispatch(PPCContext& ctx, uint8_t* base, uint32_t object, uint32_t id,
                          uint32_t before) {
   const uint64_t entry = ctx.r3.u64;
-  const bool log = REXCVAR_GET(log_autosave);
+  const bool log = SBX_GET(log_autosave);
   const uint32_t after = guest::LoadU32(base, object + kStateOffset);
   const bool found = ctx.r3.u32 != kNoEntry;
   const bool top = object != 0 && object == g_garage_top;
@@ -295,7 +295,7 @@ struct TraceKey {
 };
 
 void Trace(TraceKey& last, const char* name, uint32_t lr, uint32_t result) {
-  if (!REXCVAR_GET(log_autosave) || (last.lr == lr && last.result == result)) {
+  if (!SBX_GET(log_autosave) || (last.lr == lr && last.result == result)) {
     return;
   }
   last = {lr, result};
@@ -323,7 +323,7 @@ SBX_TRACE_SAVE_CALL(sub_8228CFA8, "SaveGame::Read (sub_8228CFA8)")
 // SaveGame::Write: the device state just before it, too.
 extern "C" REX_FUNC(sub_8228CEE8) {
   REX_FUNC_PROLOGUE();
-  if (REXCVAR_GET(log_autosave)) {
+  if (SBX_GET(log_autosave)) {
     const uint32_t lr = uint32_t(ctx.lr);
     const uint64_t r3 = ctx.r3.u64;
     ctx.r3.u64 = 0;

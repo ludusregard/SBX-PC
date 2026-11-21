@@ -1,13 +1,12 @@
 // The career's records as our own C++ (--native_career, on by default):
 // the play time's mark and the win streaks' getters.
 
+#include "base/settings.h"
 #include "game/guest_types.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_career, true, "SBX",
-                    "Our own C++ for the career's play time mark and win streak getters "
-                    "instead of the recompiled functions");
+SBX_SETTING_BOOL(native_career, true, "Overrides", "Menus and UI",
+                 "Our own C++ for the career's play time mark and win streak getters "
+                 "instead of the recompiled functions");
 
 namespace {
 
@@ -37,7 +36,7 @@ struct Stats {
   u16_be win_streak;
 };
 
-bool On() { return REXCVAR_GET(native_career); }
+bool On() { return SBX_GET(native_career); }
 
 }  // namespace
 

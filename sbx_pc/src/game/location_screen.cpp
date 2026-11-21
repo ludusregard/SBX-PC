@@ -1,13 +1,12 @@
 // The location screen as our own C++ (--native_location_screen, on by
 // default): its reset.
 
+#include "base/settings.h"
 #include "game/guest_types.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_location_screen, true, "SBX",
-                    "Our own C++ for the location screen's reset instead of the recompiled "
-                    "function");
+SBX_SETTING_BOOL(native_location_screen, true, "Overrides", "Menus and UI",
+                 "Our own C++ for the location screen's reset instead of the recompiled "
+                 "function");
 
 namespace {
 
@@ -41,7 +40,7 @@ GUEST_OFFSET(LocationScreen, unknown_900, 900);
 // LocationScreen::Reset: r3 the screen.
 extern "C" REX_FUNC(sub_822254A0) {
   REX_FUNC_PROLOGUE();
-  if (!REXCVAR_GET(native_location_screen)) {
+  if (!SBX_GET(native_location_screen)) {
     __imp__sub_822254A0(ctx, base);
     return;
   }

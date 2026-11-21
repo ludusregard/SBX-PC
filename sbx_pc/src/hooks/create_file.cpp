@@ -5,19 +5,19 @@
 // the boot logo movie's open to skip it doesn't work, the game shows the
 // dirty disc error; --skip_cutscenes does it instead.)
 
+#include "base/settings.h"
 #include "guest.h"
 
-#include <rex/cvar.h>
 #include <rex/logging.h>
 
 #include <string>
 
-REXCVAR_DEFINE_BOOL(log_file_opens, false, "SBX", "Log every file the game opens");
+SBX_SETTING_BOOL(log_file_opens, false, "Logging", "Game", "Log every file the game opens");
 
 // CreateFile: r3 = path; returns the handle, or -1.
 extern "C" REX_FUNC(sub_82292F48) {
   REX_FUNC_PROLOGUE();
-  if (REXCVAR_GET(log_file_opens)) {
+  if (SBX_GET(log_file_opens)) {
     std::string path;
     for (uint32_t p = ctx.r3.u32; p && path.size() < 260; p++) {
       char c = char(guest::LoadU8(base, p));

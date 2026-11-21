@@ -1,13 +1,12 @@
 // The scene target as our own C++ (--native_scene_target, on by default):
 // its bound targets recorded.
 
+#include "base/settings.h"
 #include "game/guest_types.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_scene_target, true, "SBX",
-                    "Our own C++ for the scene target's bound targets recorded instead of the "
-                    "recompiled function");
+SBX_SETTING_BOOL(native_scene_target, true, "Overrides", "Scene",
+                 "Our own C++ for the scene target's bound targets recorded instead of the "
+                 "recompiled function");
 
 namespace {
 
@@ -20,7 +19,7 @@ constexpr uint32_t kTargetRecorder = 0x8265CD6C;
 // recorder records it (recompiled).
 extern "C" REX_FUNC(sub_8209B178) {
   REX_FUNC_PROLOGUE();
-  if (!REXCVAR_GET(native_scene_target)) {
+  if (!SBX_GET(native_scene_target)) {
     __imp__sub_8209B178(ctx, base);
     return;
   }

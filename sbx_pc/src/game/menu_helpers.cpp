@@ -7,16 +7,15 @@
 // does, so the mapper itself stays recompiled (and subtick's once-a-tick
 // mapper update still applies).
 
+#include "base/settings.h"
 #include "game/menu.h"
 #include "hooks/guest_call.h"
 
-#include <rex/cvar.h>
-
 #include <algorithm>
 
-REXCVAR_DEFINE_BOOL(native_menu_helpers, true, "SBX",
-                    "Our own C++ for the menu cursors (MenuCursor::Update and Pressed) instead "
-                    "of the recompiled functions; the action mapper stays recompiled");
+SBX_SETTING_BOOL(native_menu_helpers, true, "Overrides", "Menus and UI",
+                 "Our own C++ for the menu cursors (MenuCursor::Update and Pressed) instead "
+                 "of the recompiled functions; the action mapper stays recompiled");
 
 namespace {
 
@@ -150,7 +149,7 @@ bool Pressed(Guest& g, const MenuCursor* cursor, uint32_t action) {
 // MenuCursor::Update: r3 = the cursor. Returns which way it moved.
 extern "C" REX_FUNC(sub_82184468) {
   REX_FUNC_PROLOGUE();
-  if (!REXCVAR_GET(native_menu_helpers)) {
+  if (!SBX_GET(native_menu_helpers)) {
     __imp__sub_82184468(ctx, base);
     return;
   }
@@ -161,7 +160,7 @@ extern "C" REX_FUNC(sub_82184468) {
 // MenuCursor::Pressed: r3 = the cursor, r4 = the action. Returns 1 or 0.
 extern "C" REX_FUNC(sub_821843C8) {
   REX_FUNC_PROLOGUE();
-  if (!REXCVAR_GET(native_menu_helpers)) {
+  if (!SBX_GET(native_menu_helpers)) {
     __imp__sub_821843C8(ctx, base);
     return;
   }

@@ -10,7 +10,7 @@
 // no normal (glass, an unlit solid, a translated shader), the normal left
 // there from behind it isn't its own, and the normal from depth stays; as it
 // does where none was written. Sample 0 of a multisampled target
-// (MULTISAMPLE), as the G-buffer takes its depth.
+// (MULTISAMPLE), as BuildDepthMotion takes its depth.
 //   binding 0: the normals target (r32g32ui)
 //   binding 1: XeGTAO's normals (r32ui), read and written
 //   binding 2: XeGTAO's view-space depth, MIP 0 (r32f)

@@ -71,9 +71,9 @@
 
 #include "audio/music/library.h"
 #include "audio/music/track.h"
+#include "base/settings.h"
 #include "guest.h"
 
-#include <rex/cvar.h>
 #include <rex/logging.h>
 
 #include <algorithm>
@@ -86,21 +86,21 @@
 #include <string>
 #include <vector>
 
-REXCVAR_DEFINE_BOOL(custom_music, true, "SBX",
-                    "Play tracks from ADDON_DATA/CUSTOM_MUSIC in the place of the game's music "
-                    "(experimental)");
-REXCVAR_DEFINE_DOUBLE(new_music_roll, 0.0, "SBX",
-                      "Custom music: the chance (0 to 1) each music start plays a custom track, "
-                      "for folders whose metadata.xml has no ReplaceChance");
-REXCVAR_DEFINE_BOOL(custom_music_shuffle, true, "SBX",
-                    "Custom music: when a custom track ends and would loop, play another track "
-                    "of the folder instead");
-REXCVAR_DEFINE_BOOL(custom_music_log, false, "SBX",
-                    "Custom music: log each roll and each time a track starts");
-REXCVAR_DEFINE_BOOL(custom_music_adaptive_volume, true, "SBX",
-                    "Custom music: bring each track's loudness (LUFS) to the game's music's "
-                    "average, so the tracks sit at a similar level. Read at start-up, so it "
-                    "takes effect on restart (not live)");
+SBX_SETTING_BOOL(custom_music, true, "Hooks", "Audio",
+                 "Play tracks from ADDON_DATA/CUSTOM_MUSIC in the place of the game's music "
+                 "(experimental)");
+SBX_SETTING_DOUBLE(new_music_roll, 0.0, "Hooks", "Audio",
+                   "Custom music: the chance (0 to 1) each music start plays a custom track, "
+                   "for folders whose metadata.xml has no ReplaceChance");
+SBX_SETTING_BOOL(custom_music_shuffle, true, "Hooks", "Audio",
+                 "Custom music: when a custom track ends and would loop, play another track "
+                 "of the folder instead");
+SBX_SETTING_BOOL(custom_music_log, false, "Hooks", "Audio",
+                 "Custom music: log each roll and each time a track starts");
+SBX_SETTING_BOOL(custom_music_adaptive_volume, true, "Hooks", "Audio",
+                 "Custom music: bring each track's loudness (LUFS) to the game's music's "
+                 "average, so the tracks sit at a similar level. Read at start-up, so it "
+                 "takes effect on restart (not live)");
 
 namespace {
 
@@ -294,7 +294,7 @@ uint32_t Choose(uint8_t* base, uint32_t from, const std::string& bank) {
     REXLOG_INFO("custom_music: {} (from {:08X}): not a category; the game's", bank, from);
     return 0;
   }
-  if (!REXCVAR_GET(custom_music)) {
+  if (!SBX_GET(custom_music)) {
     REXLOG_INFO("custom_music: {} (from {:08X}, {}): off; the game's", bank, from, category);
     return 0;
   }
@@ -305,7 +305,7 @@ uint32_t Choose(uint8_t* base, uint32_t from, const std::string& bank) {
                 bank, from);
     return 0;
   }
-  const double chance = g_library.Chance(category, REXCVAR_GET(new_music_roll));
+  const double chance = g_library.Chance(category, SBX_GET(new_music_roll));
   const double roll = std::uniform_real_distribution<double>(0.0, 1.0)(g_random);
   std::string rolled =
       chance > 0 ? "rolled " + Fixed2(roll) + ", chance " + Fixed2(chance)
@@ -371,7 +371,7 @@ std::unique_ptr<audio::music::Track> RollMenuSong(uint32_t input, const uint8_t*
     return nullptr;
   }
   const char* category = kMenuSongs[song].category;
-  const double chance = g_library.Chance(category, REXCVAR_GET(new_music_roll));
+  const double chance = g_library.Chance(category, SBX_GET(new_music_roll));
   const double roll = std::uniform_real_distribution<double>(0.0, 1.0)(g_random);
   std::string rolled =
       chance > 0 ? "rolled " + Fixed2(roll) + ", chance " + Fixed2(chance)
@@ -414,7 +414,7 @@ std::unique_ptr<audio::music::Track> RollMenuSong(uint32_t input, const uint8_t*
 namespace custom_music {
 
 void SetGameDataRoot(const std::filesystem::path& root) {
-  if (!REXCVAR_GET(custom_music)) {
+  if (!SBX_GET(custom_music)) {
     REXLOG_INFO("custom_music: off (--custom_music=false)");
     return;
   }
@@ -433,7 +433,7 @@ void SetGameDataRoot(const std::filesystem::path& root) {
                        break;
                    }
                  },
-                 ValidGame, REXCVAR_GET(custom_music_adaptive_volume));
+                 ValidGame, SBX_GET(custom_music_adaptive_volume));
 }
 
 std::unique_ptr<audio::music::Track> TakeTrack(uint32_t input, const uint8_t* data, uint32_t size,
@@ -488,7 +488,7 @@ std::unique_ptr<audio::music::Track> TakeTrack(uint32_t input, const uint8_t* da
 
 std::unique_ptr<audio::music::Track> NextTrack(uint32_t sample_rate, uint32_t channels,
                                                uint32_t ahead) {
-  if (!REXCVAR_GET(custom_music_shuffle)) {
+  if (!SBX_GET(custom_music_shuffle)) {
     return nullptr;
   }
   std::unique_ptr<audio::music::Track> track;
@@ -520,11 +520,11 @@ std::unique_ptr<audio::music::Track> NextTrack(uint32_t sample_rate, uint32_t ch
 }
 
 bool Shuffle() {
-  return REXCVAR_GET(custom_music_shuffle);
+  return SBX_GET(custom_music_shuffle);
 }
 
 bool Logging() {
-  return REXCVAR_GET(custom_music_log);
+  return SBX_GET(custom_music_log);
 }
 
 }  // namespace custom_music

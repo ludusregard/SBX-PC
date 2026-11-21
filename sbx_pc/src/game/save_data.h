@@ -30,6 +30,17 @@ struct StatRecords {
 };
 GUEST_SIZE(StatRecords, 724);
 
+// A play time: hours, then minutes, seconds and frames (30 a second). The
+// save's stats keep one; PlayTime::Add hands a copy back.
+struct PlayTime {
+  u32_be hours;
+  uint8_t minutes;
+  uint8_t seconds;
+  uint8_t frames;
+  uint8_t unknown_7;
+};
+GUEST_SIZE(PlayTime, 8);
+
 struct StatPair {
   f32_be unknown_0;
   u32_be unknown_4;
@@ -48,14 +59,17 @@ struct SaveStats {
   u32_be unknown_5956;  // 1 once reset.
   uint8_t unknown_5960[48];
   u32_be unknown_6008;  // 3 once reset.
-  uint8_t unknown_6012[28];
-  u32_be unknown_6040;  // Save +6088: set for a new game from [0x826B5870].
+  uint8_t unknown_6012[20];
+  PlayTime play_time;  // PlayTime::Add's total.
+  u32_be play_clock_mark;  // The play clock ([0x826B5870]) when the play time was last added to.
 };
 GUEST_OFFSET(SaveStats, unknown_4896, 4896);
 GUEST_OFFSET(SaveStats, records, 4948);
 GUEST_OFFSET(SaveStats, pairs_5880, 5880);
 GUEST_OFFSET(SaveStats, unknown_5956, 5956);
 GUEST_OFFSET(SaveStats, unknown_6008, 6008);
+GUEST_OFFSET(SaveStats, play_time, 6032);
+GUEST_OFFSET(SaveStats, play_clock_mark, 6040);
 GUEST_SIZE(SaveStats, 6044);
 
 struct SaveEntry {
@@ -89,7 +103,7 @@ GUEST_SIZE(ControlMap, 60);
 
 struct SaveOptions {
   u32_be unknown_0[6];  // 1 by default.
-  u32_be unknown_24;    // 2 by default.
+  u32_be camera_view;   // The race's starting view: 0 hood, 1 cockpit, 2 chase (the default).
   uint8_t unknown_28[2];  // 15 by default.
   uint8_t unknown_30[2];
   u32_be unknown_32;
@@ -108,6 +122,40 @@ struct CourseRecords {
 };
 GUEST_SIZE(CourseRecords, 8996);
 
+// Which course record: the course and the traffic setting (0 or 1).
+struct CourseKey {
+  i32_be course;
+  i32_be traffic;
+};
+GUEST_SIZE(CourseKey, 8);
+
+// A car as the save data's garage keeps it: the first 1,880 bytes are a
+// car object's (its settings, decals, options and tuning levels), copied
+// over a fresh car to rebuild it.
+struct SavedCar {
+  static constexpr uint32_t kCarBytes = 1880;
+
+  uint8_t car[kCarBytes];
+  uint8_t unknown_1880[84];
+};
+GUEST_SIZE(SavedCar, 1964);
+
+// The save data's garage (SaveData + 6120): a fixed list of slots, the 50
+// cars, and which place in the list is selected.
+struct SaveGarage {
+  static constexpr int kCars = 50;
+
+  SaveListIndex list;
+  uint8_t unknown_210[2];
+  SavedCar cars[kCars];
+  u32_be unknown_98412;  // 50 in a new game.
+  u32_be selected;       // The selected car's place in the list (from its head).
+};
+GUEST_OFFSET(SaveGarage, cars, 212);
+GUEST_OFFSET(SaveGarage, unknown_98412, 98412);
+GUEST_OFFSET(SaveGarage, selected, 98416);
+GUEST_SIZE(SaveGarage, 98420);
+
 struct SaveData {
   static constexpr uint32_t kBytes = 129200;
 
@@ -124,10 +172,7 @@ struct SaveData {
   u32_be unknown_6108;
   u32_be unknown_6112;
   u32_be unknown_6116;
-  SaveListIndex list_6120;
-  uint8_t unknown_6330[98202];
-  u32_be unknown_104532;
-  uint8_t unknown_104536[4];
+  SaveGarage garage;
   u32_be car_unlocks;  // The car unlock bits' first word.
   uint8_t unknown_104544[8];
   uint8_t unknown_104552[60];
@@ -151,8 +196,7 @@ struct SaveData {
 };
 GUEST_OFFSET(SaveData, stats, 48);
 GUEST_OFFSET(SaveData, unknown_6108, 6108);
-GUEST_OFFSET(SaveData, list_6120, 6120);
-GUEST_OFFSET(SaveData, unknown_104532, 104532);
+GUEST_OFFSET(SaveData, garage, 6120);
 GUEST_OFFSET(SaveData, car_unlocks, 104540);
 GUEST_OFFSET(SaveData, unknown_104552, 104552);
 GUEST_OFFSET(SaveData, unknown_104612, 104612);
@@ -165,5 +209,28 @@ GUEST_OFFSET(SaveData, unknown_119900, 119900);
 GUEST_OFFSET(SaveData, course_records, 119908);
 GUEST_OFFSET(SaveData, options, 128916);
 GUEST_SIZE(SaveData, SaveData::kBytes);
+
+// The two-player save block (240,100 bytes, player 1's slot): each
+// player's save data up to its course records (as SaveData's first bytes),
+// then one set of options.
+struct TwoPlayerSave {
+  static constexpr uint32_t kPlayerBytes = offsetof(SaveData, course_records);
+
+  uint8_t players[2][kPlayerBytes];
+  SaveOptions options;
+};
+GUEST_OFFSET(TwoPlayerSave, options, 239816);
+GUEST_SIZE(TwoPlayerSave, 240100);
+
+// save_data.cpp's C++, for the boot's set-up and unload (data_load.cpp).
+
+// SaveData::Create (sub_82105938): save slot `slot` made and given a new
+// game's defaults.
+void CreateSave(guest::Guest& g, uint32_t slot);
+
+// SaveData::Teardown (probably; sub_821057F8): the boot objects freed (the
+// input recordings, the replay, the race data, save slot 0, the data
+// tables).
+void TearDownBootObjects(guest::Guest& g);
 
 }  // namespace game

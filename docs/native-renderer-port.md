@@ -93,6 +93,78 @@ game's names for them: the hand-written shader and its defines
 example the garage car's paint, to see its lights and maps),
 `--main-view` the 3D view's, `--resolves` lists the resolves in order.
 
+## XeGTAO (2026-11-16 to 2026-11-18)
+
+Works in the race view and the menu view (garage, shops, parking area:
+pitch 1280, 4x MSAA, drawn in tiles). `ApplyXeGTAO` and `BuildDepthMotion` in
+`src/renderer/vulkan/passes.cpp`; shaders in `glsl/depth_motion.frag` and
+`glsl/xegtao/` (Intel's XeGTAO, compiled by `glsl/compile_xegtao.py`, which
+patches `XeGTAO.hlsli` as it compiles it; the file stays Intel's).
+
+- **Cameras.** Each command list hands over its camera (`CaptureListCamera`,
+  `subtick/renderer_hooks.cpp`): camera pass 0's view-projection and
+  projection in races; in menus the pass the 3D scene updates (the garage
+  stage's step, the parking area's scene; `CarTransforms_MenuSceneCamera`).
+  The rear-view mirror's camera (`--xegtao_mirror`) is the first pass after
+  0 with a perspective projection of aspect 4 (within 0.05); its target is
+  pitch 520, 4x MSAA, resolved at 512x128.
+- **Depth and camera motion** (`BuildDepthMotion`, where XeGTAO runs): at
+  the race view's second color resolve (`kXeGtaoRaceResolve`: the whole
+  scene; the cars come after the first) or the menu view's first tiled
+  resolve: depth as drawn, view distance, and camera motion from this
+  frame's and last frame's view-projection (ours, per frame, since subtick
+  blends the camera). This was "G-buffer lite" (`--gbuffer`, with debug
+  views of its buffers and the game's velocity buffer); removed as a
+  feature of its own 2026-11-18. The G-buffer to build new effects on is
+  what the hand-written shaders write (below) with this depth.
+- **Camera cuts** (`--reset_effects_on_camera_cut`): each list's camera
+  carries subtick's count of the main camera's cuts
+  (`CarTransforms_CameraCutSerial`); a frame where it changed has no camera
+  motion, no AO history, and starts `--blur_frame_blend`'s ring again
+  (`Passes::State::CameraCutFrame`).
+- **XeGTAO** runs after the whole 3D scene: depth MIPs, normals, the AO
+  term, its denoise, then a history pass (`xegtao_temporal.comp`:
+  reprojected with the camera motion, dropped where the view distance
+  changed by over 15%, clamped to the 3x3 neighborhood; XeGTAO's noise
+  moves each frame so it averages out). The result is multiplied into every
+  sample of the 3D view before the anti-aliasing and post-processing.
+- **What the hand-written shaders give it** (`glsl/game/xe_interface.glsl`):
+  - A light target (location 2, RGBA16F, `xe_color_output`): the light a
+    draw adds (the unlit material, additive blends, and light a shader
+    marks with `xe_light_extra`, such as the course projector's underglow
+    and headlights). The AO is applied as color x ao + light x (1 - ao).
+  - A normals target (location 1, R32G32_UINT: the packed world-space
+    normal and the fragment's view distance; `materials/normals_out.glsl`,
+    `xe_out_normal`), written by every depth-writing draw of a shader with
+    a normal. Course shaders without one pass the mesh's normal from fetch
+    93 (`STREAM_NORMAL_REG`, `vertex/model.vert`) when that stream starts
+    right after the positions with as many vertices.
+  - The AO's own depth (`xegtao_depth.comp`) is the normals target's view
+    distances, over the view's depth where none was written;
+    `xegtao_normals.comp` takes a normal only where its distance is the
+    depth's (0.2% plus the depth's slope over a pixel), else the normal
+    from depth.
+  - Glass (`SBX_FAMILY` 4: shaders with `UV2_REG`, and `SBX_GLASS` in
+    `post/variants.txt`, such as the windshield's `ps_4F4860F071E25904`)
+    writes neither, so the AO looks through it. Additive draws never write
+    the normals target.
+  - Blended, non-additive model draws (wheels' alpha cutouts, grilles,
+    cover glows) write the normals target only from a copy drawn first,
+    color and depth off, with a dithered alpha test moved each frame (bit
+    31 of the system flags, `kXeFlagSbxDitheredAlpha`); the history
+    averages it into a smooth edge.
+  - No-AO draws (bit 30, `kXeFlagSbxNoAo`: draws sampling the mirror's
+    view, opaque draws without the depth test such as the sky) set the
+    sign bit of their distance; `xegtao_depth.comp` writes a no-AO mask
+    (R8) and the history pass sets the visibility to 1 there.
+- **Plane bias:** a sample no higher than 0.1 m over the center's tangent
+  plane doesn't occlude, fading in up to 0.2 m (`XeGtao::plane_bias`,
+  passed in `GTAOConstants.Padding0`), so decals and parking markings make
+  no AO.
+- Surfaces drawn by a translated shader (`--native_shaders_off`) or without
+  a pixel shader aren't in the AO's depth. Meshes authored flat (much of
+  the parking area) give faceted normals, as their data has them.
+
 ## The main finding: SBX's graphics library is a different revision
 
 The game code matches ITC's closely, and so does the game's render command

@@ -261,11 +261,22 @@ GUEST_SIZE(RaceEntries, 381800);
 
 // The race data (made into [0x826B580C] by RaceData::Create).
 struct RaceData {
-  uint8_t unknown_0[446056];
+  uint8_t unknown_0[444820];
+  u32_be unknown_444820;  // 2 (with play mode 6): the cockpit camera may take the second car model in the scene.
+  uint8_t unknown_444824[8];
+  uint8_t unknown_444832[1220];  // Looked up by sub_820FFED8 with play mode 6.
+  u32_be camera_flags;  // 0x80: the TV cameras are in the race camera's views; 0x20, 0x40 (below).
   RaceEntries entries;
-  uint8_t unknown_827856[48];
+  uint8_t unknown_827856[32];
+  u32_be play_mode;      // 4: split screen; 6: as above.
+  u32_be unknown_827892;  // 2 (with camera_flags 0x20 or 0x40): a step of RaceCamera::Update's runs.
+  uint8_t unknown_827896[8];
 };
 GUEST_SIZE(RaceData, 827904);
+GUEST_OFFSET(RaceData, unknown_444820, 444820);
+GUEST_OFFSET(RaceData, unknown_444832, 444832);
+GUEST_OFFSET(RaceData, camera_flags, 446052);
 GUEST_OFFSET(RaceData, entries, 446056);
+GUEST_OFFSET(RaceData, play_mode, 827888);
 
 }  // namespace game

@@ -4,11 +4,11 @@
 
 #include "game/data_file.h"
 
-#include <rex/cvar.h>
+#include "base/settings.h"
 
-REXCVAR_DEFINE_BOOL(native_data_files, true, "SBX",
-                    "Our own C++ for DataFile::GetEntry (an entry of the game's container files) "
-                    "instead of the recompiled function");
+SBX_SETTING_BOOL(native_data_files, true, "Overrides", "Data and Saves",
+                 "Our own C++ for DataFile::GetEntry (an entry of the game's container files) "
+                 "instead of the recompiled function");
 
 using game::DataFile;
 
@@ -16,7 +16,7 @@ using game::DataFile;
 // empty entry; r3 = the entry or 0.
 extern "C" REX_FUNC(sub_82292170) {
   REX_FUNC_PROLOGUE();
-  if (!REXCVAR_GET(native_data_files)) {
+  if (!SBX_GET(native_data_files)) {
     __imp__sub_82292170(ctx, base);
     return;
   }

@@ -14,6 +14,7 @@
 //
 // The present's 2-vblank wait is dropped (the pacer holds the rate instead).
 
+#include "base/settings.h"
 #include "debug/frame_state_diff.h"
 #include "guest.h"
 #include "hooks/title_screen.h"
@@ -27,7 +28,6 @@
 #endif
 
 #include <fmt/format.h>
-#include <rex/cvar.h>
 #include <rex/logging.h>
 
 #include <cmath>
@@ -35,10 +35,12 @@
 #include <set>
 #include <string>
 
-REXCVAR_DEFINE_BOOL(subtick, true, "SBX",
-                    "Draw frames between the game's 30 Hz ticks (--max_fps), in races and the "
-                    "menus, with the cars' controls fed input sampled each frame "
-                    "(--subtick_input); game logic stays at 30 Hz");
+SBX_SETTING_DECLARE(bool, reset_effects_on_camera_cut);
+
+SBX_SETTING_BOOL(subtick, true, "Graphics", "Frame Rate",
+                 "Draw frames between the game's 30 Hz ticks (--max_fps), in races and the "
+                 "menus, with the cars' controls fed input sampled each frame "
+                 "(--subtick_input); game logic stays at 30 Hz");
 
 namespace {
 
@@ -57,7 +59,7 @@ constexpr uint32_t kCameraPassSize = 592;
 constexpr uint32_t kCameraPasses = 21;
 
 // The camera the list just recorded was drawn with, for the native
-// renderer's own passes (--gbuffer, --xegtao). In a race, pass 0: with
+// renderer's own passes (--xegtao). In a race, pass 0: with
 // --subtick it's this frame's blended camera (CarTransforms_RebuildCamera),
 // still in place until CarTransforms_EndFrame. In the menus, the camera pass
 // their 3D scene updated on this pass (CarTransforms_MenuSceneCamera; also
@@ -65,6 +67,9 @@ constexpr uint32_t kCameraPasses = 21;
 renderer::ListCamera CaptureListCamera(uint8_t* base) {
   renderer::ListCamera camera;
   camera.in_race = subtick::GameMessages_InRace();
+  if (SBX_GET(reset_effects_on_camera_cut)) {
+    camera.cut_serial = subtick::CarTransforms_CameraCutSerial();
+  }
   const uint32_t pass = camera.in_race ? kMainCamera : subtick::CarTransforms_MenuSceneCamera();
   if (pass == 0) {
     return camera;
@@ -172,7 +177,7 @@ extern "C" REX_FUNC(sub_82092E60) {
                                     CaptureListCamera(base));
 #endif
   __imp__sub_82092E60(ctx, base);
-  if (!REXCVAR_GET(subtick)) {
+  if (!SBX_GET(subtick)) {
 #ifdef SBX_VULKAN_RENDERER
     subtick::GameMessages_OnPassFinished(base);  // tells when a race ends
 #endif
@@ -214,7 +219,7 @@ extern "C" REX_FUNC(sub_82573638) {
   // Without --subtick the pacer isn't running (PaceNextPass), so hold the
   // game's 30 Hz here instead of the 2-vblank wait. Without it every pass ran
   // at once, as fast as the CPU allowed.
-  if (!REXCVAR_GET(subtick) && !skip_wait) {
+  if (!SBX_GET(subtick) && !skip_wait) {
     subtick::FramePacer& pacer = subtick::GetFramePacer();
     pacer.WaitForNextTick();
     pacer.OnTickReleased();

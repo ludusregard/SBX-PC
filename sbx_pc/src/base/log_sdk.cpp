@@ -10,15 +10,15 @@
 #include <memory>
 #include <string>
 
+#include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/logging/sink.h>
 #include <spdlog/sinks/base_sink.h>
 #include <spdlog/sinks/rotating_file_sink.h>
 
-#include "base/flags.h"
 #include "base/log.h"
 
-ITC_FLAG_DECLARE(std::string, log_level);
+REXCVAR_DECLARE(std::string, log_level);
 
 namespace base {
 
@@ -68,7 +68,7 @@ void TakeOverSdkLogFile() {
   sdk_file->set_level(spdlog::level::off);
   rex::RemoveSink(sdk_file);
   rex::AddSink(std::make_shared<ForwardSink>());
-  StartLogFile(sdk_file->filename(), ITC_FLAG(log_level));
+  StartLogFile(sdk_file->filename(), REXCVAR_GET(log_level));
 }
 
 }  // namespace base

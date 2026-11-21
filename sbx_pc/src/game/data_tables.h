@@ -61,4 +61,10 @@ GUEST_SIZE(DataTables, 64);
 GUEST_OFFSET(DataTables, items, 16);
 GUEST_OFFSET(DataTables, table_20, 52);
 
+// DataTables::Init (sub_82116F18) and DataTables::Load (sub_821173A8)
+// (data_tables.cpp), from the boot's set-up: the table object and its
+// block made, then the twelve tables loaded into it.
+void InitDataTables(guest::Guest& g);
+void LoadDataTables(guest::Guest& g);
+
 }  // namespace game

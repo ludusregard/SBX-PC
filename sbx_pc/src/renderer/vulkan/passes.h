@@ -95,6 +95,10 @@ class Passes {
   void set_skip_pixel_shader(uint64_t hash);
   // Leave out the game's motion blur (its pixel shader's draws; --motion_blur).
   void set_skip_motion_blur(bool skip);
+  // --menu_texture_filtering: the 2D sprite shaders' draws (the XMD screens,
+  // the HUD) sample textures the game set to point bilinearly
+  // (boot/menu_filter.glsl).
+  void set_menu_texture_filtering(bool enabled);
   // Anti-alias the main view with Intel's CMAA2 (--cmaa2) and/or FXAA
   // (--fxaa; after CMAA2 if both) before its `at`-th color resolve of a
   // frame (--aa_resolve; see ApplyCmaa2 and ApplyFxaa in passes.cpp).
@@ -111,18 +115,10 @@ class Passes {
   // 1 the corners) to full at `outer`. `strength` is the blur's share (0-1;
   // 0 off).
   void set_frame_blend(float strength, float inner, float outer, float shutter);
-  // G-buffer lite (--gbuffer; BuildGBuffer in passes.cpp): at the main
-  // view's `at`-th color resolve of a frame (1: the opaque scene), its depth
-  // into buffers of our own (depth and view distance; the camera's motion
-  // vectors). debug (--gbuffer_debug): draw one over the frame (1 view
-  // distance up to depth_range, 2 velocity times velocity_scale, 3 the game's
-  // own velocity buffer, 4 the depth as drawn; 0 off).
-  void set_gbuffer(bool enabled, uint32_t at, int32_t debug, float depth_range,
-                   float velocity_scale);
   // Intel's XeGTAO ambient occlusion (--xegtao; ApplyXeGTAO in passes.cpp):
-  // right after the G-buffer is built (it's built for this even without
-  // --gbuffer), the AO multiplied into the main view. quality 0-3 (low to
-  // ultra), denoise passes 0-3, radius in the game's units (meters),
+  // right after the view's depth and camera motion are built
+  // (BuildDepthMotion), the AO multiplied into the main view. quality 0-3
+  // (low to ultra), denoise passes 0-3, radius in the game's units (meters),
   // strength 0-1 (0 no change). debug (--xegtao_debug): draw one of its
   // buffers over the frame (1 AO, 2 normals, 3 edges; 0 off). temporal
   // (--xegtao_temporal): each frame's share of the AO kept over frames (1:

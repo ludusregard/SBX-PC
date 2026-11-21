@@ -1,6 +1,7 @@
 # Working on this repo
 
-SBX PC: a native PC port of Shutoko Battle X (Xbox 360). It started as a
+SBX PC: a native PC port of Shutoko Battle X (Xbox 360) for Windows and
+Linux. It started as a
 static recompilation on ReXGlue (`rexglue-sdk/`, submodule pinned to
 v0.10.0; SDK changes go in `patches/rexglue-sdk-vulkan/`), and the game
 is being rewritten as native C++ subsystem by subsystem.
@@ -49,20 +50,29 @@ Read the relevant doc before making changes; update it as you learn.
   before work on the add-on or part writing.
 - `docs/itc-parity.md`: what came over from ITC-Recomp, what's left, and
   how each of its folders reads at SBX's addresses.
-- `docs/native-renderer-port.md`: the native Vulkan renderer, and how
-  SBX's graphics library differs from ITC's.
+- `docs/native-renderer-port.md`: the native Vulkan renderer (layout,
+  pipeline warm-up, frame dumps, XeGTAO), and how SBX's
+  graphics library differs from ITC's.
+- `docs/shaders.md`: the game's shaders as GLSL (the exact ports and the
+  hand-written shaders the renderer uses, `--native_shaders`, on by
+  default). Check before changing a shader or how they're loaded.
+- `docs/part_shaders.md`: the shaders the part files carry (the cars' and
+  course objects' materials), for the mod tools.
+- `docs/imgui-vulkan-plan.md`: the F4 overlay (ImGui on the Vulkan
+  renderer).
 - `docs/porting-from-itc.md`: how SBX relates to ITC-Recomp (Import Tuner
   Challenge, the US release), matching its functions to SBX, and the last
   reviewed ITC-Recomp commit. Check before porting anything from it.
 
 ## Session start
 
-ALWAYS check ITC-Recomp for changes since "Last reviewed" in
-`docs/porting-from-itc.md`:
+ITC-Recomp checks are sidelined (2026-11-14) while the code is refactored
+into native C++. Don't check it at session start. When the user asks for a
+check:
 
 1. Check the current local ITC-Recomp checkout. Do not fetch, pull, or otherwise update it.
 2. If the checkout appears to be behind, inform the user and let them update it manually.
-3. Inspect the commit history since `Last reviewed`, including changes to `CLAUDE.md` and `docs/*.md`.
+3. Inspect the commit history since "Last reviewed" in `docs/porting-from-itc.md`, including changes to `CLAUDE.md` and `docs/*.md`.
 4. Report new or renamed functions, fixes, features, and changed conventions, identifying their respective commits.
 5. For each new function or fix, ask whether the user wants it ported. Use `itc_to_sbx_functions.tsv` and `port_addrs.py` to identify corresponding SBX addresses.
 6. Update `Last reviewed` after the changes have been reviewed.
@@ -85,5 +95,6 @@ ALWAYS check ITC-Recomp for changes since "Last reviewed" in
 - Follow ITC-Recomp's layout, naming, and documentation conventions unless an SBX document specifies otherwise.
 - Documentation and comments describe SBX on its own terms. Reference ITC-Recomp only when the origin of something matters.
 - Use American English (color, gray).
+- SBX is a Japanese game: text in its data that isn't ASCII is most likely Shift-JIS (code page 932); the string tables are UTF-16 BE. Try Shift-JIS before treating bytes as unknown (`docs/game_data.md`, "Text encodings").
 - Keep code, comments, documentation, and commit messages plain, concise, and readable.
 - Never use `-march=native`.

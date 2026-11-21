@@ -6,14 +6,13 @@
 // Its UvMap and UvColumn trees (the C++ library's std::map on the game's
 // heap), the rings' set-up and the draw stay recompiled.
 
+#include "base/settings.h"
 #include "game/guest_types.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_screen_objects, true, "SBX",
-                    "Our own C++ for the race's screen object (its strength each tick, its "
-                    "release and destructor) instead of the recompiled functions; its trees and "
-                    "set-up stay recompiled");
+SBX_SETTING_BOOL(native_screen_objects, true, "Overrides", "Menus and UI",
+                 "Our own C++ for the race's screen object (its strength each tick, its "
+                 "release and destructor) instead of the recompiled functions; its trees and "
+                 "set-up stay recompiled");
 
 namespace {
 
@@ -39,7 +38,7 @@ GUEST_OFFSET(ScreenObject, uv_map, 76096);
 
 constexpr uint32_t kVideo = 0x8265CD68;  // Holds the device's owner.
 
-bool On() { return REXCVAR_GET(native_screen_objects); }
+bool On() { return SBX_GET(native_screen_objects); }
 
 // The graphics device: the video object's slot 7, then that one's slot 3.
 void* Device(Guest& g) {

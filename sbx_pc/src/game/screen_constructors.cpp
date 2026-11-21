@@ -14,12 +14,12 @@
 
 #include "game/screen_constructors.h"
 
-#include <rex/cvar.h>
+#include "base/settings.h"
 
-REXCVAR_DEFINE_BOOL(native_screen_constructors, true, "SBX",
-                    "Our own C++ for the front end's screen constructors (panels, groups, "
-                    "sets, node tables, list and node screens) instead of the recompiled "
-                    "functions");
+SBX_SETTING_BOOL(native_screen_constructors, true, "Overrides", "Menus and UI",
+                 "Our own C++ for the front end's screen constructors (panels, groups, "
+                 "sets, node tables, list and node screens) instead of the recompiled "
+                 "functions");
 
 namespace {
 
@@ -50,7 +50,7 @@ using guest::Guest;
 using guest::i32_be;
 using guest::u32_be;
 
-bool On() { return REXCVAR_GET(native_screen_constructors); }
+bool On() { return SBX_GET(native_screen_constructors); }
 
 // The vtables (read-only).
 constexpr uint32_t kNodeBaseVtable = 0x82000A40;

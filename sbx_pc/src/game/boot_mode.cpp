@@ -1,13 +1,12 @@
 // The boot mode's screen machine as our own C++ (--native_boot_mode, on by
 // default): its constructor.
 
+#include "base/settings.h"
 #include "game/game_modes.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_boot_mode, true, "SBX",
-                    "Our own C++ for the boot mode's screen machine constructor instead of "
-                    "the recompiled function");
+SBX_SETTING_BOOL(native_boot_mode, true, "Overrides", "Menus and UI",
+                 "Our own C++ for the boot mode's screen machine constructor instead of "
+                 "the recompiled function");
 
 namespace {
 
@@ -23,7 +22,7 @@ struct ScreenMachine {
 // Returns it.
 extern "C" REX_FUNC(sub_82107480) {
   REX_FUNC_PROLOGUE();
-  if (!REXCVAR_GET(native_boot_mode)) {
+  if (!SBX_GET(native_boot_mode)) {
     __imp__sub_82107480(ctx, base);
     return;
   }

@@ -1,13 +1,12 @@
 // The race loading's course set-up as our own C++ (--native_race_loading,
 // on by default): its begin and its course-ready step.
 
+#include "base/settings.h"
 #include "game/game_modes.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_race_loading, true, "SBX",
-                    "Our own C++ for the course set-up's begin and course-ready steps instead "
-                    "of the recompiled functions");
+SBX_SETTING_BOOL(native_race_loading, true, "Overrides", "Race",
+                 "Our own C++ for the course set-up's begin and course-ready steps instead "
+                 "of the recompiled functions");
 
 namespace {
 
@@ -25,7 +24,7 @@ struct CourseSetup {
 };
 GUEST_OFFSET(CourseSetup, loading_course, 9640);
 
-bool On() { return REXCVAR_GET(native_race_loading); }
+bool On() { return SBX_GET(native_race_loading); }
 
 }  // namespace
 

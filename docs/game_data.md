@@ -22,6 +22,24 @@ It's mixed, so check each format:
   ints) and light sets (`sub_82292170` and `Lights::FindNearest` swap after
   `lwz`).
 
+## Text encodings
+
+SBX is a Japanese game. Text that isn't plain ASCII is Japanese, in one of
+two encodings:
+
+- **UTF-16 BE**: the string tables (below) and the font's code table.
+- **Shift-JIS** (code page 932): text stored as bytes everywhere else.
+  When bytes in a name or a string don't read as ASCII, try Shift-JIS
+  before calling them unknown. Found so far:
+  - `00000094` (loaded by `sub_821173A8`, above): the rivals' names, 400
+    records of 0xBBC bytes. +0 is the record's index (u16 BE), +2 the name,
+    zero-ended (`☆ローリング野郎１号`, `ライジングベア`, ..., `？？？` for the
+    last). The rest of the record isn't worked out.
+  - 75 car texture packs (XPR2) name one texture `vinyl_` 82 94 `emp`
+    (`vinyl_` 82 94 `emp2` in two): a full-width `ｔ` typed into
+    `vinyl_temp`. A tool that writes a pack back must keep the name's
+    bytes as stored.
+
 ## The archives
 
 `DATA/BUILD/TXR/` holds two archives, each a `.TOC` index and a `.DAT`
@@ -161,6 +179,10 @@ the data is copied out before the next one:
 - the vinyls and stickers (`LoadSlot::LoadShared`): a file that doesn't
   fit is skipped, and its slot is treated as empty.
 
+With the native Init its size is `--archive_shared_buffer_kb` (default
+12800 KiB, the game's), and the native loader refuses a load that doesn't
+fit instead of overrunning.
+
 A set-a car's node file and body XPR2 get their own allocations, sized
 from the TOC.
 
@@ -177,7 +199,33 @@ assets/PATCH_DATA/BUILD/TXR/BUILD_CRS/<id>.<any extension>   BUILD_CRS ids
 A file is named by its id, as GUT Archive Tools names its dumps
 (`00000072.bin`, the car specs); the extension is ignored. In
 `BUILD_CRS/` the id is either the game's (23009-24367) or the one within
-that archive (0-1358). Files are uncompressed, like the dumps, and may be
+that archive (0-1358).
+
+Both folders are read with their sub-folders, so files can be organized
+as the modder likes (`cars/z33/00003152.node`). A file with any other
+name gets its id from the folder's `TOC.xml`, which maps ids to paths in
+the folder:
+
+```xml
+<TOC>
+  <File Id="3152" Path="cars/z33/z33_a_tr.node"/>
+</TOC>
+```
+
+- `TOC.xml` is only read at the folder's root (`BUILD/TOC.xml`,
+  `BUILD_CRS/TOC.xml`). `Id` reads as a file name's does; `Path` is
+  relative to the folder, with `/` or `\`, and can't leave it (`..`).
+- A `TOC.xml` entry wins over a file named by the same id, and a file it
+  lists isn't also read by its own name. Otherwise the first file for an
+  id wins, by path order. Every file skipped is logged with the reason.
+- Names starting with a dot are skipped (the submodule's `.git`), files
+  and folders; so are files that are neither named by an id nor listed.
+  A missing `TOC.xml` file or a bad entry is logged and skipped.
+- The folders are read once, in `Archive::Init`; a load looks its id up
+  in a table, so the folder layout doesn't change load times.
+
+sbxr_tools sets up and checks `TOC.xml`: `sbxr toc`, and the explorer's
+Working tree (see its README). Files are uncompressed, like the dumps, and may be
 larger or smaller than the original; their format is up to the modder.
 Files the game loads into the shared load buffer (above) must still fit
 in it: set-b and set-c car textures and the decal TGAs.
@@ -222,6 +270,9 @@ a file whose first word is 0. The light sets `Lights::FindNearest` reads
 are containers like this.
 
 ## Courses (`BUILD_CRS`)
+
+The files' contents (route, AI corners, collision mesh, set files, lights,
+time of day) are in `courses.md`.
 
 Every `BUILD_CRS` id is part of a course, except the course shaders
 (24256-24367, see "Shaders"). A course is the world drawn and driven in
@@ -271,7 +322,14 @@ How the index is picked:
   the mesh and route): `sub_8228C478` (r3 x 3 + r4). Place 1 when the
   race data's word +4 (`[0x826B580C]`) is 8, 9 or 10, with variant 0;
   otherwise place 0, with the race data's +32 as the variant (0-2).
-  What the variant stands for isn't known yet.
+  The variant is the time of day: 0 Night, 1 Midnight, 2 Dawn (the two
+  lists of names, `NIGHT`/`MID_NIGHT`/`DAY_BREAK` for the debug "COURSE IN
+  TIMEZONE SELECT" menu, `sub_821899D0`, and `Night`/`Midnight`/`Dawn`,
+  `sub_8228F0D8`, both in that order). `sub_820FFAB8` is its only writer
+  (r3 to race data +32); callers include the course-in menus (their
+  list's selection, `sub_8242B828`), `sub_82115F18` (a front-end state's
+  +6104, the same word the front end's own variant comes from), and the
+  title screen's attract race (`sub_8221FAE0`, from a table on its stack).
 - **Front end** (`sub_82229DD8`): `sub_8228C488` ((r3 + 2) x 3 + r4). The
   scene number comes from a table at `0x82626478` (16 bytes an entry:
   three `BUILD` ids, then the scene number 0-5, indexed by a front-end
@@ -279,8 +337,8 @@ How the index is picked:
 
 ### The race map's ids (confirmed)
 
-Variant 0 (variants 1 and 2 have the same layout at +373 and +746:
-23384-23756 and 23757-24129):
+Variant 0, Night (variants 1 Midnight and 2 Dawn have the same layout at
++373 and +746: 23384-23756 and 23757-24129):
 
 | Ids | What | Unpacked size |
 |---|---|---|
@@ -410,10 +468,14 @@ The game's text is in BUILD entries 22637-22653, one table per entry:
 ```
 
 The tables have the same layout as a container, so GUT Archive Tools
-writes them as `.dat` (`00022637.dat`). There's no room in the font for
-new characters, so the old tools add accented Latin letters by reusing
-kanji the text doesn't need (`string_remap.py` in the old research, see
-below), presumably with those glyphs redrawn in the font sheet.
+writes them as `.dat` (`00022637.dat`). There was no room in the font for
+new characters, so the old tools added accented Latin letters by reusing
+kanji the text doesn't need (`string_remap.py` in the old research,
+Restored's `string_edit.py`), with those glyphs redrawn in the font sheet.
+SBX's own fonts (below, "SDF fonts") give the accents cells of their own at
+their real codes, and the EN strings are in real code points (2026-11-20:
+the 18 remapped letters, all ō in "Shin-Kanjō" in 22638, 22640 and 22644,
+converted; 22652's untranslated Japanese left as it is).
 
 | Id | Contents |
 |---|---|
@@ -488,6 +550,54 @@ original 576 x 928 for a sheet that is an exact multiple of it (2304 x
 3712 for 4x), so the coordinates come out as the same fractions of the
 larger sheet. The table stays as it is. The sheet has no mip levels;
 drawn much smaller than its cells, a large sheet may shimmer.
+
+### SDF fonts (SBX's own)
+
+sbxr_tools' `font_upscale` (its own workspace in `font_upscale/`) makes
+fonts with a sheet of its own layout and signed distance fields instead of
+coverage. The container has a third file the game doesn't read (it only
+asks for files 0 and 1), the SBXF:
+
+```
+container (LE): u32 3, u32 offset of the table, of the XPR2, of the SBXF
+SBXF (BE):      "SBXF", u32 version (1), u32 flags (1: distance field),
+                u32 sheet pixels per cell, f32 spread (sheet pixels from the
+                edge to 0 or 255), u32 columns, u32 rows
+```
+
+`src/hooks/font.cpp` gives `Font::LoadSheet` the sheet's size divided by
+its cells' scale (cell pixels over the table's), so any grid maps: the
+2048 x 2048 sheet of 56-pixel cells reads as 1024 x 1024, 36 columns of 28
+(the 32-pixel strip left at the right and bottom is never addressed). With
+the distance-field flag it hands the renderer the sheet's address and
+spread, and the font shaders threshold the distance (`docs/shaders.md`,
+"Distance-field font").
+
+The fonts: every glyph of the disc's 22656 and the 186 the Restored SD
+Latin font added (182 accented letters it drew in kanji cells, redrawn Ⅰ,
+Ⅳ, ○, △), each in its own cell of 36 x 36 cells a channel (5,184 slots),
+the same cell in every font. One sheet per size, two tables:
+
+- **JAPANESE**: the disc's table, its codes on their glyphs, the disc's
+  advances.
+- **LATIN**: for text in real code points. The disc's table plus the
+  accented letters at their own codes (ō at U+014D); the kanji the old
+  remap borrowed stay kanji, so untranslated Japanese in a Latin language
+  shows. Latin letters (and the accents) spaced by their ink; digits keep
+  one width so numbers don't jump. Codes neither font has advance 14.
+
+Two sizes, the same layout and the same advances:
+
+- **SDF** (`FONTS/SDF/<script>/00022656.dat`): from 4x redraws, 56-pixel
+  distance fields (spread 4) in a 2048 x 2048 sheet. Sharp at any
+  resolution; needs `native_shaders`.
+- **SD** (`FONTS/SD/<script>/00022656.dat`): the 28-pixel originals (and
+  Restored's accents) as coverage, in a 1024 x 1024 sheet (1024 / 28 = 36
+  columns; SBXF flags 0).
+
+SDF is the standard: the loader looks in `FONTS/SDF/` first and uses SD
+only as the fallback, for a font SDF lacks or with `native_shaders` off
+(there's no setting).
 
 ## Parameter tables (BUILD 72-83)
 
@@ -661,8 +771,8 @@ is set by hand (1.0-1.6; Devil Z 1.6 front, 1.5 rear).
 `Tire::InchUp` (`sub_820C44C8`) changes a tire for bigger rims, by n
 inches: the rim diameter grows by n, the width by 5% an inch (rounded
 down to 5 mm), the aspect ratio keeps the outer diameter, the rim width
-becomes 3.5 + (width mm - 135) / 20 inches (rounded down to 0.5; 0.5 less
-under 175 mm), and grip scales with 1 + 3.67 x sqrt(radius x width).
+becomes 3.5 + (width mm - 135) / 20 inches (0.5 less from 175 mm up, then
+rounded down to a whole inch), and grip scales with 1 + 3.67 x sqrt(radius x width).
 How many inch-ups the wheel shop offers is fixed per car id in the code
 (`sub_821ED5D8`): 20 minus the stock rim diameter, at most 4, and 0 for
 the cut cars (the port gives them 3 and 4, `--cut_car_wheels`).
@@ -819,6 +929,20 @@ in the first 4 records of each 10.
 
 920 bytes: 230 floats, all 1.0 in this copy. Not worked out.
 
+### 84-96: the data tables (confirmed from the code)
+
+`DataTables::Load` (`sub_821173A8`, `src/game/data_tables.cpp`) loads
+twelve assets once at boot, each into its own table of one block. 85 isn't
+one of them.
+
+| Id | What |
+|---|---|
+| 94 | The rivals: 400 records of 0xBBC bytes (the item count the load callback sets). +0 the record's index (u16 BE), +2 its name, zero-ended, in Shift-JIS (`☆ローリング野郎１号`, `ライジングベア`, ..., `？？？` for the last). The rest isn't worked out. |
+| 84 | Loaded with nothing swapped (bytes). Not worked out. |
+| 86-93 | Eight tables of 56-byte entries, each ended by an entry whose first word is -1. Their ids are a list at `0x82606BEC`, in this order: 86, 87, 91, 88, 92, 89, 90, 93 (`DataTables::Entry56` takes the position in it). |
+| 95 | 20-byte entries (`DataTables::Find20` searches it). |
+| 96 | 40-byte entries. |
+
 ## Other formats
 
 | Format | Magic | Notes |
@@ -827,7 +951,7 @@ in the first 4 records of each 10.
 | XMD (`.xmd`) | `XMD\0` | Menu and HUD screens; the bitmaps for a screen are XPR2 nested inside. |
 | XMDL (`.xmdl`) | `0IVX00.1` | Models (name from GUT Archive Tools). |
 | XFN (`.xfn`) | `FF AA FF AA` | Probably fonts (name only). |
-| XACT | `.xgs`, `.xsb` (`KBDS`), `.xwb` (`DNBW`) | Audio: global settings, sound banks, wave banks. See `docs/audio.md`. |
+| XACT | `.xgs`, `.xsb` (`KBDS`), `.xwb` (`DNBW`) | Audio: global settings, sound banks, wave banks. Layouts in "Formats" in `docs/audio.md`. |
 | XPU (`.xpu`) | `10 2A 0E 00` (pixel), `10 2A 0E 01` (vertex) | Compiled shaders; see "Shaders" below. GUT Archive Tools names both kinds `.xpu`. |
 | Loose TGA | `TRUEVISION-XFILE` footer | Car decals are plain TGA. |
 
@@ -1150,9 +1274,10 @@ placeholders: two hinge nodes each, no shapes (1,568 bytes). The doors
 are part of the body, a single 25,318-triangle shape, which is why they
 can't open in the garage. The ECLI's broken garage camera when choosing
 interior parts, which stays on the current camera, may come from the
-missing seat nodes (inferred; the camera code isn't traced). No node in any car is a camera: the cameras' positions
-aren't in the node files, the parts or the car specs (block 1), and
-where they are isn't known yet.
+missing seat nodes (inferred; the camera code isn't traced). No node in any car is a camera: the cockpit camera's eye and target are a
+table in the xex (`0x82608D20`, one per car model block), and the chase and
+hood cameras work theirs out from block 2's length and height
+(`docs/functions.md`, `native_race_camera`).
 
 #### Part files (`00 15 00 00`, confirmed against the data)
 
@@ -1240,7 +1365,7 @@ use Direct3D's orientation (v = 0 at the top of the texture), the same
 as glTF's.
 The omamori's skinned shape has only the color/UV stream in the vertex
 data; its bind-pose positions and normals are in the skin arrays. The
-wheel parts (rims, brakes, tires) use the float4 types (0x05, 0x07) in
+wheel parts (both sets' wheels, tires) use the float4 types (0x05, 0x07) in
 their vertex streams and repeat them in the skin arrays, but their skin
 blocks are static: no bones.
 
@@ -1257,8 +1382,8 @@ The tire parts (581, 583; the only parts with morphs) hold `base_Shape`
 and `target_00_Shape` to `target_04_Shape`: the same vertex count, UVs,
 stream layout, index buffers and material records, with the
 positions moved by up to 0.11 m, so they're morph targets the game
-blends between (what each target is for isn't known). In the rim and
-brake parts the `_12` and `_20` shapes (`A0_12_Shape`, `A0_20_Shape`,
+blends between (what each target is for isn't known). In both sets'
+wheel parts the `_12` and `_20` shapes (`A0_12_Shape`, `A0_20_Shape`,
 `B0_12_Shape` ...) are identical in positions, normals and indices;
 what the suffix means isn't known.
 
@@ -1589,8 +1714,8 @@ up to 32 bytes of zero padding.
 #### Wheels (confirmed against the data)
 
 The wheel models are parts below the first car block, three ids each:
-the textures (XPR2), the rim with its wheel face, the brake and hub.
-Wheel i (0-99) is XPR2 586 + 3i, rim 587 + 3i, brake 588 + 3i. Both parts
+the textures (XPR2), set a's wheel and set b's wheel (below).
+Wheel i (0-99) is XPR2 586 + 3i, set a's wheel 587 + 3i, set b's wheel 588 + 3i. Both parts
 name the wheel in their first node:
 
 - 0-19: the stock wheels of car blocks 0-19, in block order (`RX7` ...
@@ -1603,19 +1728,28 @@ name the wheel in their first node:
   the ids of table 73's wheel records.
 
 A rim holds `A0_12_Shape`, `A0_20_Shape` (the same mesh; see "Part files"),
-`NUT_n_x_Shape` (the nuts: 4 or 5) and `punch_12/20_Shape`; a brake
+`NUT_n_x_Shape` (the nuts: 4 or 5) and `punch_12/20_Shape`; a set b wheel
 holds `B0`-`B2_12/20_Shape` and `B_space_Shape`. The tires are 581
 (`tire_00`) and 583 (`tire_01`), the same size (0.61 m across, 0.255 m
 wide), each a base and five morph targets. 886 holds brake calipers
 (`c_normal_09/18`, `c_tune_09/18`); 888 is a 6 m `wheelShape`, not a car
 part. Which tire each car uses isn't known.
 
+The two parts are the two model sets' wheels: the rim part (587 + 3i,
+`A0_12/20` of 1,300 to 2,300 vertices, the nuts, `punch`) is set a's, the
+garage's, and the other (588 + 3i, `B0`-`B2_12/20` of about 61 vertices
+each and `B_space`) set b's, the race's (counted from the data; it isn't a
+brake: the calipers are 886). The shape names the game looks for are two
+tables, set a's at `0x825F2964` and set b's at `0x825F2980`.
+
 The code picks the wheel models (`sub_820D8DD8` calls `sub_820D8860` or
-`sub_820D8900`, by the word at +8 of `[car model+3268]`). The front and
-rear wheel numbers are at car model+44 and +60: -1 is the stock wheel, n
+`sub_820D8900`, by the model set at +8 of `[car model+3268]`). The parking
+area's scene is set b (as a race's), so its cars get race wheels; the port
+gives them set a's (`--parking_area_garage_wheels`,
+`src/hooks/parking_area_wheels.cpp`). The front and rear wheel numbers are at car model+44 and +60: -1 is the stock wheel, n
 the aftermarket wheel 36 + n. The XPR2 goes to +2144 (front) and +2168
-(rear), the part to +1168 and +1192: the rim (587 + 3i) from
-`sub_820D8860`, the brake (588 + 3i) from `sub_820D8900`. A stock wheel
+(rear), the part to +1168 and +1192: set a's (587 + 3i) from
+`sub_820D8860`, set b's (588 + 3i) from `sub_820D8900`. A stock wheel
 is the car's block's (wheel i = block) only for blocks 0-19 (signed
 compare); any other block gets AD00 (wheel 36). Traffic (car model+28 =
 3) uses wheel 20 + its traffic index in `sub_820D8900`.
@@ -1739,8 +1873,6 @@ differently.
 
 ## Not documented yet
 
-- XACT audio: what's needed to make it work in the port (known to the
-  user, to be written down).
 - The car spec fields beyond those above, the wheel records (73), 83 and
   84-96, and which tuning level is which power or drive-train part.
 - The rest of the part format (the material record's flags and the

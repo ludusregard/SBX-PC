@@ -13,18 +13,17 @@
 //   1: half newest, half the biggest changes.
 // The result is a weighted average of the samples' axes.
 
+#include "base/settings.h"
 #include "subtick/input.h"
-
-#include <rex/cvar.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
 
-REXCVAR_DEFINE_DOUBLE(subtick_input_sensitivity, 0.5, "SBX",
-                      "With --subtick_input: how much the input's biggest changes between ticks "
-                      "count toward a tick's input, from 0.0 (the tick's own input only) to 1.0 "
-                      "(half the newest input, half the biggest changes)");
+SBX_SETTING_DOUBLE(subtick_input_sensitivity, 0.5, "Graphics", "Frame Rate",
+                   "With --subtick_input: how much the input's biggest changes between ticks "
+                   "count toward a tick's input, from 0.0 (the tick's own input only) to 1.0 "
+                   "(half the newest input, half the biggest changes)");
 
 namespace subtick {
 
@@ -36,7 +35,7 @@ ControlSample Input_Aggregate(const std::vector<ControlSample>& samples) {
   if (last == 0) {
     return samples[0];
   }
-  const double s = std::clamp(REXCVAR_GET(subtick_input_sensitivity), 0.0, 1.0);
+  const double s = std::clamp(SBX_GET(subtick_input_sensitivity), 0.0, 1.0);
 
   // Each sample's change from the one before it, over all axes, with each axis
   // scaled to the 16-bit range.

@@ -11,9 +11,8 @@
 #include "renderer/vulkan/generated_aa_out_frag.h"
 #include "renderer/vulkan/generated_frame_blend_frag.h"
 #include "renderer/vulkan/generated_fxaa_frag.h"
-#include "renderer/vulkan/generated_gbuffer_debug_frag.h"
-#include "renderer/vulkan/generated_gbuffer_frag.h"
-#include "renderer/vulkan/generated_gbuffer_ms_frag.h"
+#include "renderer/vulkan/generated_depth_motion_frag.h"
+#include "renderer/vulkan/generated_depth_motion_ms_frag.h"
 #include "renderer/vulkan/generated_gamma_comp.h"
 #include "renderer/vulkan/generated_id_frag.h"
 #include "renderer/xbox_gamma_table.h"
@@ -50,30 +49,40 @@
 // shaders; its clamp asserts.
 #include <cassert>
 #include "renderer/vulkan/glsl/xegtao/XeGTAO.h"
+#include <rex/cvar.h>
 #include <rex/graphics/pipeline/shader/spirv_translator.h>
 #include <rex/graphics/register_file.h>
 #include <rex/graphics/registers.h>
 #include <rex/graphics/util/draw.h>
 #include <rex/graphics/xenos.h>
-#include "base/flags.h"
 #include "base/hash.h"
 #include "base/log.h"
+#include "base/settings.h"
 
-ITC_FLAG_DECLARE(std::string, log_level);
+REXCVAR_DECLARE(std::string, log_level);
 
-ITC_FLAG_BOOL(native_renderer_warm_pipelines, true, "SBX",
-              "Make the pipelines earlier sessions drew with at start, on a worker thread "
-              "(cache/pipeline_list.bin), so the first draw of each doesn't stutter");
+SBX_SETTING_BOOL(native_renderer_warm_pipelines, true, "Vulkan", "Caching",
+                 "Make the pipelines earlier sessions drew with at start, on a worker thread "
+                 "(cache/pipeline_list.bin), so the first draw of each doesn't stutter",
+                 sbx::kRestart);
 
-ITC_FLAG_STRING(xbox_gamma, "hdtv", "SBX",
-                "Show the frame through the display gamma table the game sets for a kind "
-                "of display, as the Xbox 360's video output does (native renderer): off "
-                "(a PC monitor, sRGB: no change), hdtv (the default: darker mid-tones and "
-                "shadows), power (lighter shadows)");
+SBX_SETTING_STRING(xbox_gamma, "hdtv", "Graphics", "Post-Process",
+                   "Show the frame through the display gamma table the game sets for a kind "
+                   "of display, as the Xbox 360's video output does (native renderer): off "
+                   "(a PC monitor, sRGB: no change), hdtv (the default: darker mid-tones and "
+                   "shadows), power (lighter shadows)");
 
 namespace renderer {
 
 namespace graphics = rex::graphics;
+
+namespace {
+// Renderer_SetDistanceFieldFont: the sheet's physical address (0: none) and
+// its spread in 1/256 sheet pixels, in one word so a draw never reads one
+// font's address with another's spread.
+std::atomic<uint64_t> g_distance_field_font{0};
+}  // namespace
+
 namespace reg = rex::graphics::reg;
 namespace xenos = rex::graphics::xenos;
 namespace draw_util = rex::graphics::draw_util;
@@ -991,6 +1000,7 @@ struct Passes::State {
   // record_draws, each draw is described in a line (written with a dump).
   uint64_t skip_pixel_shader = 0;
   bool skip_motion_blur = false;  // --motion_blur=false
+  bool menu_texture_filtering = false;  // --menu_texture_filtering
   bool record_draws = false;
   // With log_glow: per frame, the glow history's cross-fade draws (pixel
   // shader kGlowCrossFade) and the texture they read, and 256x144 resolves
@@ -1164,7 +1174,7 @@ struct Passes::State {
     uint64_t last_frame = 0;        // frame_serial when it last ran
   } frame_blend;
   uint64_t frame_serial = 0;  // BeginFrame counts frames
-  // The 3D views the G-buffer and XeGTAO work on, each with its own: the
+  // The 3D views XeGTAO works on, each with its own: the
   // race's main view (pitch 1040, 2x MSAA), and in the menus their 3D view
   // (the garage, the shops, the parking area: pitch 1280, 4x MSAA, drawn in
   // tiles), each with the list's camera (ListCamera: in the menus the camera
@@ -1189,55 +1199,61 @@ struct Passes::State {
   ListCamera frame_camera;
   uint64_t frame_camera_serial = ~0ull;
   const ListCamera& FrameCamera();
+  // A camera cut on this frame (the list camera's cut count changed,
+  // --reset_effects_on_camera_cut): what keeps earlier frames starts again
+  // (the camera motion, XeGTAO's history, --blur_frame_blend's ring).
+  uint64_t last_cut_serial = 0;
+  bool has_cut_serial = false;
+  bool camera_cut = false;
+  bool CameraCutFrame() {
+    FrameCamera();
+    return camera_cut;
+  }
   // Which view `color` is drawn as (kViewKinds: neither).
   ViewKind ViewOf(const Target& color);
-  // --gbuffer, G-buffer lite (BuildGBuffer; glsl/gbuffer.frag): in a race,
-  // at the main view's gbuffer.at-th color resolve (2 by default, the whole
-  // scene: the cars are drawn after the first, the opaque scenery); with
-  // --xegtao, where it runs. Its depth into our own buffers, kept past the
-  // frame: depth (as drawn, and the view distance) and the camera's motion
-  // vectors, from this frame's and last frame's camera (the list's).
-  // --gbuffer_debug draws one of them over the frame (DrawGBufferDebug).
-  struct GBuffer {
-    bool enabled = false;
-    uint32_t at = 2;
-    int32_t debug = 0;  // 0 off; glsl/gbuffer_debug.frag's modes
-    float depth_range = 500.0f, velocity_scale = 20.0f;
+  // XeGTAO's depth and camera motion (BuildDepthMotion;
+  // glsl/depth_motion.frag), once a frame on each 3D view where XeGTAO runs
+  // (in a race at the main view's kXeGtaoRaceResolve-th color resolve): the
+  // view's depth into our own buffers, kept past the frame: depth (as drawn,
+  // and the view distance) and the camera's motion vectors, from this
+  // frame's and last frame's camera (the list's; none across a camera cut).
+  // (Was "G-buffer lite", --gbuffer, with its own debug views; the materials'
+  // normals and light targets XeGTAO added are the G-buffer now.)
+  struct DepthMotion {
     bool tried = false, ready = false;
     VkExtent2D extent{};
     Image depth, velocity;  // R32G32F (depth, view distance); R16G16F (UV per frame)
     VkImageLayout depth_layout = VK_IMAGE_LAYOUT_UNDEFINED;
     VkImageLayout velocity_layout = VK_IMAGE_LAYOUT_UNDEFINED;
-    VkPipelineLayout build_layout = VK_NULL_HANDLE, debug_layout = VK_NULL_HANDLE;
-    VkDescriptorSetLayout debug_set_layout = VK_NULL_HANDLE;
-    VkShaderModule build_pixel = VK_NULL_HANDLE, build_pixel_ms = VK_NULL_HANDLE,
-                   debug_pixel = VK_NULL_HANDLE;
+    VkPipelineLayout build_layout = VK_NULL_HANDLE;
+    VkShaderModule build_pixel = VK_NULL_HANDLE, build_pixel_ms = VK_NULL_HANDLE;
     VkPipeline build_pipeline = VK_NULL_HANDLE, build_pipeline_ms = VK_NULL_HANDLE;
-    std::map<std::pair<VkFormat, VkSampleCountFlagBits>, VkPipeline> debug_pipelines;
     uint64_t built_frame = 0;  // frame_serial when last built
     // Last built frame's camera (the game's view-projection, row vectors).
     float previous[16] = {};
     bool has_previous = false;
-    // Last built frame's view and projection (row vectors), for --xegtao.
+    // Last built frame's view and projection (row vectors), for XeGTAO.
     float view[16] = {};
     float projection[16] = {};
     bool logged_no_camera = false, logged_no_depth = false, logged_extent = false;
     bool logged_singular = false, logged_no_set = false;
   };
-  GBuffer gbuffers[kViewKinds];
-  bool CreateGBufferResources(GBuffer& g, VkExtent2D extent);
-  void BuildGBuffer(VkCommandBuffer commands, uint8_t* base, uint32_t device, ViewKind view);
-  // Draws the --gbuffer_debug view over `target`'s top-left `extent`.
-  void DrawGBufferDebug(VkCommandBuffer commands, Target& target, VkExtent2D extent);
+  // The race view's color resolve XeGTAO runs at: the second, the whole
+  // scene (the cars are drawn after the first, the opaque scenery).
+  static constexpr uint32_t kXeGtaoRaceResolve = 2;
+  DepthMotion depth_motions[kViewKinds];
+  bool CreateDepthMotionResources(DepthMotion& d, VkExtent2D extent);
+  void BuildDepthMotion(VkCommandBuffer commands, uint8_t* base, uint32_t device, ViewKind view);
   // --xegtao, Intel's XeGTAO (ApplyXeGTAO; glsl/xegtao/, compiled by
-  // glsl/compile_xegtao.py), on each 3D view: right after its G-buffer is
-  // built (for this, even without --gbuffer), from its depth and the
+  // glsl/compile_xegtao.py), on each 3D view: right after its depth and
+  // motion are built (BuildDepthMotion), from its depth and the
   // frame's projection: the view-space depth and its MIPs, normals from the
   // depth, the smooth normals the materials wrote over them where they did
   // ("View targets"), the AO term, the denoise passes, the AO kept over
   // frames (the history), then the AO into every sample of the view, under
   // the light the light target holds (color * ao + light * (1 - ao)), at the
-  // race view's resolve gbuffer.at or the menu view's first tiled resolve:
+  // race view's resolve kXeGtaoRaceResolve or the menu view's first tiled
+  // resolve:
   // before the anti-aliasing and the post-processing read it, after every
   // draw of the 3D scene. Draws stay in the game's order. (Earlier versions
   // ran it at the first blended draw, which left out the cars and the
@@ -1276,7 +1292,8 @@ struct Passes::State {
     Image depth, normals, edges, ao[2];
     // The AO's depth (R32F, raw; glsl/xegtao/xegtao_depth.comp): what the
     // prefilter and the normals from depth read (binding 1), in place of the
-    // G-buffer's depth: with a normals target, its view distances over it
+    // view's depth (BuildDepthMotion): with a normals target, its view
+    // distances over it
     // (no glass; the smooth-alpha solids dithered by their alpha). Sets by
     // the normals target's view (null: none).
     Image ao_depth;
@@ -1323,7 +1340,7 @@ struct Passes::State {
     std::map<std::pair<VkFormat, VkSampleCountFlagBits>, VkPipeline> debug_pipelines;
     uint32_t final_ao = 0;      // which ao[] the last frame ended in
     uint64_t applied_frame = 0;  // frame_serial when it last ran
-    bool logged_no_gbuffer = false;
+    bool logged_no_depth_motion = false;
     // The materials' normals merged over the ones from depth
     // (glsl/xegtao/xegtao_normals.comp; single and multisampled): a set by
     // the normals target's view.
@@ -1348,8 +1365,9 @@ struct Passes::State {
   Image no_light;
   bool no_light_ready = false;
   bool CreateXeGTAOResources(ViewKind view, VkExtent2D extent);
-  // Builds the view's G-buffer and runs its AO, once a frame: at the race
-  // view's resolve gbuffer.at, the menu view's first tiled resolve.
+  // Builds the view's depth and motion and runs its AO, once a frame: at the
+  // race view's resolve kXeGtaoRaceResolve, the menu view's first tiled
+  // resolve.
   void XeGTAOAtResolve(VkCommandBuffer commands, uint8_t* base, uint32_t device, Target& main,
                        ViewKind view);
   void ApplyXeGTAO(VkCommandBuffer commands, Target& main, ViewKind view);
@@ -2713,6 +2731,11 @@ VkShaderModule Passes::State::GetModule(TranslatedShader* shader) {
 
 namespace {
 
+// The game's lines (the garage's power and torque graphs) are one pixel
+// wide at 720p; drawn as wide as the resolution scale (1.5 at 1080p, 2 at
+// 1440p) where the GPU has wide lines. Set once by Passes::Init, before any pipeline.
+float g_line_width = 1.0f;
+
 // A draw pipeline from its key (any thread: the warm-up's worker too).
 // Null if it can't be made.
 VkPipeline CreateDrawPipeline(VkDevice device, VkPipelineCache cache, const PipelineKey& key) {
@@ -2748,7 +2771,7 @@ VkPipeline CreateDrawPipeline(VkDevice device, VkPipelineCache cache, const Pipe
   raster.polygonMode = VK_POLYGON_MODE_FILL;
   raster.cullMode = key.cull_mode;
   raster.frontFace = key.front_clockwise ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
-  raster.lineWidth = 1.0f;
+  raster.lineWidth = g_line_width;
   VkPipelineMultisampleStateCreateInfo multisample{
       VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
   multisample.rasterizationSamples = VkSampleCountFlagBits(key.samples);
@@ -3208,7 +3231,7 @@ bool Passes::State::CreateGammaResources() {
   }
   ITC_LOG_INFO("native renderer: --xbox_gamma={}: the Xbox 360's gamma table for that display is "
                "applied to the frame",
-               ITC_FLAG(xbox_gamma));
+               SBX_GET(xbox_gamma));
   return true;
 }
 
@@ -3785,9 +3808,10 @@ void Passes::State::ApplyFrameBlend(VkCommandBuffer commands, Target& main) {
   if (!b.ready || extent.width != b.extent.width || extent.height != b.extent.height) {
     return;
   }
-  // A frame without the main view (a menu, a loading screen) in between:
-  // start the ring again, so nothing from before it is blended in.
-  if (b.last_frame + 1 != frame_serial) {
+  // A frame without the main view (a menu, a loading screen) in between, or
+  // a camera cut: start the ring again, so nothing from before it is
+  // blended in.
+  if (b.last_frame + 1 != frame_serial || CameraCutFrame()) {
     b.count = 0;
   }
   b.last_frame = frame_serial;
@@ -3909,6 +3933,13 @@ const ListCamera& Passes::State::FrameCamera() {
   if (frame_camera_serial != frame_serial) {
     frame_camera_serial = frame_serial;
     frame_camera = Renderer_ReplayingCamera();
+    // A list without its camera (none handed over) says nothing about cuts.
+    camera_cut = false;
+    if (frame_camera.valid) {
+      camera_cut = has_cut_serial && frame_camera.cut_serial != last_cut_serial;
+      last_cut_serial = frame_camera.cut_serial;
+      has_cut_serial = true;
+    }
   }
   return frame_camera;
 }
@@ -3950,7 +3981,7 @@ Passes::State::ViewKind Passes::State::ViewOf(const Target& color) {
   return kViewKinds;
 }
 
-bool Passes::State::CreateGBufferResources(GBuffer& g, VkExtent2D extent) {
+bool Passes::State::CreateDepthMotionResources(DepthMotion& g, VkExtent2D extent) {
   VkDevice device = context.device;
   g.extent = extent;
   const VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
@@ -3967,13 +3998,12 @@ bool Passes::State::CreateGBufferResources(GBuffer& g, VkExtent2D extent) {
     info.pCode = code;
     return vk::vkCreateShaderModule(device, &info, nullptr, &out) == VK_SUCCESS;
   };
-  if (!module(k_gbuffer_frag, sizeof(k_gbuffer_frag), g.build_pixel) ||
-      !module(k_gbuffer_ms_frag, sizeof(k_gbuffer_ms_frag), g.build_pixel_ms) ||
-      !module(k_gbuffer_debug_frag, sizeof(k_gbuffer_debug_frag), g.debug_pixel)) {
+  if (!module(k_depth_motion_frag, sizeof(k_depth_motion_frag), g.build_pixel) ||
+      !module(k_depth_motion_ms_frag, sizeof(k_depth_motion_ms_frag), g.build_pixel_ms)) {
     return false;
   }
   // The build: the depth (set 0, as a resolve's source) and 92 bytes of
-  // constants (glsl/gbuffer.frag).
+  // constants (glsl/depth_motion.frag).
   VkPushConstantRange build_push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, 92};
   VkPipelineLayoutCreateInfo layout_info{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
   layout_info.setLayoutCount = 1;
@@ -3981,25 +4011,6 @@ bool Passes::State::CreateGBufferResources(GBuffer& g, VkExtent2D extent) {
   layout_info.pushConstantRangeCount = 1;
   layout_info.pPushConstantRanges = &build_push;
   if (vk::vkCreatePipelineLayout(device, &layout_info, nullptr, &g.build_layout) != VK_SUCCESS) {
-    return false;
-  }
-  // The debug view: three images and 28 bytes (glsl/gbuffer_debug.frag).
-  VkDescriptorSetLayoutBinding bindings[3];
-  for (uint32_t i = 0; i < 3; i++) {
-    bindings[i] = {i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
-                   nullptr};
-  }
-  VkDescriptorSetLayoutCreateInfo set_info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-  set_info.bindingCount = 3;
-  set_info.pBindings = bindings;
-  if (vk::vkCreateDescriptorSetLayout(device, &set_info, nullptr, &g.debug_set_layout) !=
-      VK_SUCCESS) {
-    return false;
-  }
-  VkPushConstantRange debug_push{VK_SHADER_STAGE_FRAGMENT_BIT, 0, 28};
-  layout_info.pSetLayouts = &g.debug_set_layout;
-  layout_info.pPushConstantRanges = &debug_push;
-  if (vk::vkCreatePipelineLayout(device, &layout_info, nullptr, &g.debug_layout) != VK_SUCCESS) {
     return false;
   }
   const VkFormat formats[2] = {VK_FORMAT_R32G32_SFLOAT, VK_FORMAT_R16G16_SFLOAT};
@@ -4010,9 +4021,9 @@ bool Passes::State::CreateGBufferResources(GBuffer& g, VkExtent2D extent) {
   return g.build_pipeline != VK_NULL_HANDLE && g.build_pipeline_ms != VK_NULL_HANDLE;
 }
 
-void Passes::State::BuildGBuffer(VkCommandBuffer commands, uint8_t* base, uint32_t device,
-                                 ViewKind view) {
-  GBuffer& g = gbuffers[view];
+void Passes::State::BuildDepthMotion(VkCommandBuffer commands, uint8_t* base, uint32_t device,
+                                     ViewKind view) {
+  DepthMotion& g = depth_motions[view];
   const char* name = kViewNames[view];
   if (g.built_frame == frame_serial) {
     return;  // once a frame
@@ -4021,9 +4032,9 @@ void Passes::State::BuildGBuffer(VkCommandBuffer commands, uint8_t* base, uint32
   if (!camera.view) {
     if (!g.logged_no_camera) {
       g.logged_no_camera = true;
-      ITC_LOG_INFO("native renderer: gbuffer: a {} frame without its camera (in a race, camera "
-                   "pass 0, or the mirror's; in the menus, their 3D scene's); skipped until one "
-                   "has it",
+      ITC_LOG_INFO("native renderer: depth and motion: a {} frame without its camera (in a "
+                   "race, camera pass 0, or the mirror's; in the menus, their 3D scene's); "
+                   "skipped until one has it",
                    name);
     }
     g.has_previous = false;
@@ -4039,7 +4050,8 @@ void Passes::State::BuildGBuffer(VkCommandBuffer commands, uint8_t* base, uint32
   if (!view_depth) {
     if (!g.logged_no_depth) {
       g.logged_no_depth = true;
-      ITC_LOG_WARN("native renderer: gbuffer: the depth bound isn't the {}'s ({}); skipped",
+      ITC_LOG_WARN("native renderer: depth and motion: the depth bound isn't the {}'s ({}); "
+                   "skipped",
                    name, depth ? "another surface" : "none");
     }
     return;
@@ -4054,13 +4066,15 @@ void Passes::State::BuildGBuffer(VkCommandBuffer commands, uint8_t* base, uint32
           : depth->extent;
   if (!g.tried) {
     g.tried = true;
-    g.ready = CreateGBufferResources(g, extent);
+    g.ready = CreateDepthMotionResources(g, extent);
     if (g.ready) {
-      ITC_LOG_INFO("native renderer: gbuffer: depth and camera motion vectors ({}x{}) on the "
+      ITC_LOG_INFO("native renderer: depth and motion: depth and camera motion vectors "
+                   "({}x{}) on the "
                    "{}",
                    extent.width, extent.height, name);
     } else {
-      ITC_LOG_ERROR("native renderer: gbuffer: couldn't create the {}'s resources; off there",
+      ITC_LOG_ERROR("native renderer: depth and motion: couldn't create the {}'s resources; "
+                    "off there",
                     name);
     }
   }
@@ -4070,7 +4084,7 @@ void Passes::State::BuildGBuffer(VkCommandBuffer commands, uint8_t* base, uint32
   if (extent.width != g.extent.width || extent.height != g.extent.height) {
     if (!g.logged_extent) {
       g.logged_extent = true;
-      ITC_LOG_WARN("native renderer: gbuffer: the {} is {}x{}, its buffers {}x{}; skipped",
+      ITC_LOG_WARN("native renderer: depth and motion: the {} is {}x{}, its buffers {}x{}; skipped",
                    name, extent.width, extent.height, g.extent.width, g.extent.height);
     }
     return;
@@ -4079,17 +4093,18 @@ void Passes::State::BuildGBuffer(VkCommandBuffer commands, uint8_t* base, uint32
   if (!InvertMatrix(camera.view_projection, inverse)) {
     if (!g.logged_singular) {
       g.logged_singular = true;
-      ITC_LOG_WARN("native renderer: gbuffer: the {}'s camera view-projection can't be "
+      ITC_LOG_WARN("native renderer: depth and motion: the {}'s camera view-projection can't be "
                    "inverted; skipped",
                    name);
     }
     g.has_previous = false;
     return;
   }
-  // A frame without the G-buffer in between: no motion to measure.
-  const bool has_previous = g.has_previous && g.built_frame + 1 == frame_serial;
+  // A frame without it in between, or a camera cut: no motion to measure.
+  const bool has_previous =
+      g.has_previous && g.built_frame + 1 == frame_serial && !CameraCutFrame();
   struct {
-    float reprojection[16];  // row by row: read transposed by GLSL (see gbuffer.frag)
+    float reprojection[16];  // row by row: read transposed by GLSL (see depth_motion.frag)
     float inverse_w[4];
     float extent[2];
     int32_t has_previous;
@@ -4113,7 +4128,8 @@ void Passes::State::BuildGBuffer(VkCommandBuffer commands, uint8_t* base, uint32
   if (vk::vkAllocateDescriptorSets(context.device, &alloc, &set) != VK_SUCCESS) {
     if (!g.logged_no_set) {
       g.logged_no_set = true;
-      ITC_LOG_WARN("native renderer: gbuffer: no descriptor set for the {} this frame; skipped",
+      ITC_LOG_WARN("native renderer: depth and motion: no descriptor set for the {} this "
+                   "frame; skipped",
                    name);
     }
     return;
@@ -4175,114 +4191,10 @@ void Passes::State::BuildGBuffer(VkCommandBuffer commands, uint8_t* base, uint32
   g.built_frame = frame_serial;
 }
 
-void Passes::State::DrawGBufferDebug(VkCommandBuffer commands, Target& target, VkExtent2D extent) {
-  // The view's built this frame.
-  GBuffer* built = nullptr;
-  for (GBuffer& candidate : gbuffers) {
-    if (candidate.ready && candidate.built_frame == frame_serial) {
-      built = &candidate;
-      break;
-    }
-  }
-  if (!built || built->debug <= 0) {
-    return;
-  }
-  GBuffer& g = *built;
-  // The game's own velocity buffer (mode 3): half the main view, 16_16.
-  Target* game_velocity = nullptr;
-  for (auto& [key, t] : targets) {
-    if (!t.depth && t.image.image && t.format == VK_FORMAT_R16G16_SFLOAT &&
-        t.guest_extent.width >= kMainViewWidth / 2 &&
-        t.guest_extent.width <= kMainViewWidth / 2 + 32 &&
-        t.guest_extent.height >= kMainViewHeight / 2) {
-      game_velocity = &t;
-      break;
-    }
-  }
-  auto [it, added] = g.debug_pipelines.try_emplace({target.format, target.samples},
-                                                   VK_NULL_HANDLE);
-  if (added) {
-    it->second = MakeFullscreenPipeline(g.debug_pixel, g.debug_layout, target.format,
-                                        target.samples);
-  }
-  if (!it->second) {
-    return;
-  }
-  VkDescriptorSet set = VK_NULL_HANDLE;
-  VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-  alloc.descriptorPool = resolve_pools[frame];
-  alloc.descriptorSetCount = 1;
-  alloc.pSetLayouts = &g.debug_set_layout;
-  if (vk::vkAllocateDescriptorSets(context.device, &alloc, &set) != VK_SUCCESS) {
-    return;
-  }
-  EndRendering(commands);
-  VkImageView game_view = g.velocity.view;
-  float game_uv_scale[2] = {1.0f, 1.0f};
-  if (game_velocity && game_velocity->samples == VK_SAMPLE_COUNT_1_BIT) {
-    Transition(commands, game_velocity->image.image, VK_IMAGE_ASPECT_COLOR_BIT,
-               game_velocity->layout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    game_view = game_velocity->image.view;
-    game_uv_scale[0] = float(kMainViewWidth / 2) * game_velocity->scale /
-                       float(game_velocity->extent.width);
-    game_uv_scale[1] = float(kMainViewHeight / 2) * game_velocity->scale /
-                       float(game_velocity->extent.height);
-  }
-  VkDescriptorImageInfo images[3] = {
-      {resolve_sampler, g.depth.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {resolve_sampler, g.velocity.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {resolve_sampler, game_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
-  VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-  write.dstSet = set;
-  write.dstBinding = 0;
-  write.descriptorCount = 3;
-  write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-  write.pImageInfo = images;
-  vk::vkUpdateDescriptorSets(context.device, 1, &write, 0, nullptr);
-
-  Transition(commands, target.image.image, VK_IMAGE_ASPECT_COLOR_BIT, target.layout,
-             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-  VkRenderingAttachmentInfo attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-  attachment.imageView = target.image.view;
-  attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-  attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-  attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-  VkRect2D area{{0, 0}, extent};
-  VkRenderingInfo info{VK_STRUCTURE_TYPE_RENDERING_INFO};
-  info.renderArea = area;
-  info.layerCount = 1;
-  info.colorAttachmentCount = 1;
-  info.pColorAttachments = &attachment;
-  vk::vkCmdBeginRendering(commands, &info);
-  VkViewport viewport{0.0f, 0.0f, float(extent.width), float(extent.height), 0.0f, 1.0f};
-  vk::vkCmdSetViewport(commands, 0, 1, &viewport);
-  vk::vkCmdSetScissor(commands, 0, 1, &area);
-  vk::vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, it->second);
-  vk::vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, g.debug_layout, 0, 1,
-                              &set, 0, nullptr);
-  struct {
-    float extent[2];
-    float game_uv_scale[2];
-    int32_t mode;
-    float depth_range;
-    float velocity_scale;
-  } constants{{float(extent.width), float(extent.height)},
-              {game_uv_scale[0], game_uv_scale[1]},
-              g.debug,
-              g.depth_range,
-              g.velocity_scale};
-  static_assert(sizeof(constants) == 28);
-  vk::vkCmdPushConstants(commands, g.debug_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                         sizeof(constants), &constants);
-  vk::vkCmdDraw(commands, 3, 1, 0, 0);
-  vk::vkCmdEndRendering(commands);
-  recorded.valid = false;
-}
-
 bool Passes::State::CreateXeGTAOResources(ViewKind view, VkExtent2D extent) {
   VkDevice device = context.device;
   XeGtao& x = xegtaos[view];
-  const GBuffer& gbuffer = gbuffers[view];
+  const DepthMotion& depth_motion = depth_motions[view];
   x.extent = extent;
   const uint32_t w = extent.width, h = extent.height;
   constexpr VkImageUsageFlags kUsage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -4429,7 +4341,7 @@ bool Passes::State::CreateXeGTAOResources(ViewKind view, VkExtent2D extent) {
     x.temporal_sets[i][1] = sets[5 + 2 * i];
   }
   // The images live as long as the sets: written once. Ours stay in GENERAL;
-  // the G-buffer's depth is read in SHADER_READ_ONLY_OPTIMAL (BuildGBuffer
+  // the view's depth is read in SHADER_READ_ONLY_OPTIMAL (BuildDepthMotion
   // leaves it there).
   constexpr VkImageLayout kGeneral = VK_IMAGE_LAYOUT_GENERAL;
   std::vector<VkDescriptorImageInfo> infos;
@@ -4475,8 +4387,8 @@ bool Passes::State::CreateXeGTAOResources(ViewKind view, VkExtent2D extent) {
       constexpr VkDescriptorType kCombined = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
       constexpr VkImageLayout kRead = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
       write(set, 0, kCombined, {resolve_sampler, x.ao[i].view, kGeneral});
-      write(set, 1, kCombined, {resolve_sampler, gbuffer.velocity.view, kRead});
-      write(set, 2, kCombined, {resolve_sampler, gbuffer.depth.view, kRead});
+      write(set, 1, kCombined, {resolve_sampler, depth_motion.velocity.view, kRead});
+      write(set, 2, kCombined, {resolve_sampler, depth_motion.depth.view, kRead});
       write(set, 3, kCombined, {resolve_sampler, x.history[j].view, kGeneral});
       write(set, 4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             {VK_NULL_HANDLE, x.history[1 - j].view, kGeneral});
@@ -4585,7 +4497,7 @@ bool Passes::State::CreateXeGTAOResources(ViewKind view, VkExtent2D extent) {
                x.merge_pipeline_ms)) {
     return false;
   }
-  // The AO's depth: the G-buffer's depth and the normals target (sampled,
+  // The AO's depth: the view's depth and the normals target (sampled,
   // fetched), the result (storage), 8 bytes (XeGTAO's DepthUnpackConsts;
   // glsl/xegtao/xegtao_depth.comp). Its sets are made by normals target.
   VkDescriptorSetLayoutBinding depth_bindings[4] = {
@@ -4654,16 +4566,16 @@ bool Passes::State::CreateXeGTAOResources(ViewKind view, VkExtent2D extent) {
 
 void Passes::State::ApplyXeGTAO(VkCommandBuffer commands, Target& main, ViewKind view) {
   XeGtao& x = xegtaos[view];
-  const GBuffer& g = gbuffers[view];
+  const DepthMotion& g = depth_motions[view];
   const char* name = kViewNames[view];
   if (x.applied_frame == frame_serial) {
     return;  // once a frame
   }
   if (!g.ready || g.built_frame != frame_serial) {
-    if (!x.logged_no_gbuffer) {
-      x.logged_no_gbuffer = true;
-      ITC_LOG_INFO("native renderer: xegtao: a {} frame without its G-buffer (see its log "
-                   "lines); skipped until one has it",
+    if (!x.logged_no_depth_motion) {
+      x.logged_no_depth_motion = true;
+      ITC_LOG_INFO("native renderer: xegtao: a {} frame without its depth and motion (see their "
+                   "log lines); skipped until one has them",
                    name);
     }
     return;
@@ -4696,9 +4608,10 @@ void Passes::State::ApplyXeGTAO(VkCommandBuffer commands, Target& main, ViewKind
   const bool temporal = x.temporal < 1.0f;
   constants.NoiseIndex = temporal ? int32_t(x.noise_frame++ % 64) : 0;
   constants.Padding0 = x.plane_bias;  // unused by XeGTAO; our plane bias
-  // Last frame's history is there only if it ran in the frame just before.
+  // Last frame's history is there only if it ran in the frame just before,
+  // and not across a camera cut.
   const bool has_history = temporal && x.history_frame != 0 &&
-                           x.history_frame + 1 == frame_serial;
+                           x.history_frame + 1 == frame_serial && !CameraCutFrame();
 
   EndRendering(commands);
   if (!x.layouts_set) {
@@ -4726,7 +4639,7 @@ void Passes::State::ApplyXeGTAO(VkCommandBuffer commands, Target& main, ViewKind
                                 &x.sets[set], 0, nullptr);
   };
   // The AO's depth first: the normals target's view distances over the
-  // G-buffer's depth (glsl/xegtao/xegtao_depth.comp).
+  // view's depth (glsl/xegtao/xegtao_depth.comp).
   {
     NormalsTarget* targets = NormalsFor(&main);
     const VkImageView key = targets ? targets->image.view : VK_NULL_HANDLE;
@@ -4790,7 +4703,7 @@ void Passes::State::ApplyXeGTAO(VkCommandBuffer commands, Target& main, ViewKind
   // The depth and its MIPs: 2x2 pixels a thread.
   vk::vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, x.pipelines[0]);
   vk::vkCmdDispatch(commands, (w + 15) / 16, (h + 15) / 16, 1);
-  // The normals, from the G-buffer's depth (no barrier needed before it).
+  // The normals, from the view's depth (no barrier needed before it).
   vk::vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, x.pipelines[1]);
   vk::vkCmdDispatch(commands, (w + kGroup - 1) / kGroup, (h + kGroup - 1) / kGroup, 1);
   barrier();
@@ -4923,7 +4836,7 @@ bool Passes::State::MergeNormals(VkCommandBuffer commands, ViewKind view,
                                  NormalsTarget& normals, uint32_t w, uint32_t h,
                                  float tan_half_x, float tan_half_y) {
   XeGtao& x = xegtaos[view];
-  const GBuffer& g = gbuffers[view];
+  const DepthMotion& g = depth_motions[view];
   auto [it, added] = x.merge_sets.try_emplace(normals.image.view, VK_NULL_HANDLE);
   if (added) {
     VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
@@ -5073,7 +4986,7 @@ const Passes::State::ShaderInfo& Passes::State::InfoOf(const TranslatedShader& s
 
 void Passes::State::XeGTAOAtResolve(VkCommandBuffer commands, uint8_t* base, uint32_t device,
                                     Target& main, ViewKind view) {
-  BuildGBuffer(commands, base, device, view);
+  BuildDepthMotion(commands, base, device, view);
   ApplyXeGTAO(commands, main, view);
 }
 
@@ -5590,6 +5503,9 @@ bool Passes::Init(const DeviceContext& context, uint8_t* base, uint32_t frames_i
   State& s = *state_;
   s.context = context;
   s.scale = resolution_scale > 0.0f ? resolution_scale : 1.0f;
+  g_line_width = context.wide_lines
+                     ? std::clamp(s.scale, 1.0f, std::max(1.0f, context.max_line_width))
+                     : 1.0f;
   s.main_view_scale =
       s.scale == 1.0f ? 1.0f : s.scale * float(kShownWidth) / float(kMainViewWidth);
   s.shown_extent = s.Scaled(VkExtent2D{kShownWidth, kShownHeight});
@@ -5600,13 +5516,13 @@ bool Passes::Init(const DeviceContext& context, uint8_t* base, uint32_t frames_i
                s.main_view_extent.height, s.main_view_scale);
   s.guest_base = base;
   s.frames_in_flight = frames_in_flight;
-  const std::string& log_level = ITC_FLAG(log_level);
+  const std::string& log_level = REXCVAR_GET(log_level);
   s.collect_interfaces = log_level == "trace" || log_level == "debug" || log_level == "info";
   vk::vkGetPhysicalDeviceMemoryProperties(context.physical_device, &s.memory_properties);
   if (!s.CreateGuestMemoryMirror()) {
     return false;
   }
-  const std::string& gamma = ITC_FLAG(xbox_gamma);
+  const std::string& gamma = SBX_GET(xbox_gamma);
   if (gamma == "hdtv") {
     s.gamma_values = kXboxGammaHdtv;
   } else if (gamma == "power") {
@@ -5637,7 +5553,7 @@ bool Passes::Init(const DeviceContext& context, uint8_t* base, uint32_t frames_i
   s.OpenPipelineCache();
   if (std::filesystem::path directory = DiskCacheDirectory(); !directory.empty()) {
     s.pipeline_list.Open(directory / "pipeline_list.bin", kPipelineStateWords);
-    if (ITC_FLAG(native_renderer_warm_pipelines)) {
+    if (SBX_GET(native_renderer_warm_pipelines)) {
       s.StartPipelineWarmUp();
     }
   }
@@ -6426,6 +6342,39 @@ void Passes::State::Draw(VkCommandBuffer commands, uint8_t* base, uint32_t devic
   if (no_ao) {
     system.flags |= 1u << 30;
   }
+  // The 2D sprite shaders' mode (glsl/boot/variants.txt), in
+  // point_vertex_diameter_min, which no port reads and nothing here sets
+  // (sbx_sprite_mode in xe_interface.glsl). Only the ports read it, so with
+  // --native_shaders off nothing changes.
+  // - 1, --menu_texture_filtering: the textured sprite shaders' draws (the
+  //   UI movies' pictures and primitives: the XMD screens and the HUD). The
+  //   shader filters only where the fetch constant asks for point
+  //   (boot/menu_filter.glsl).
+  // - 2 and the spread (in 1/256 pixels, from bit 8): the font shaders'
+  //   draws of the sheet Renderer_SetDistanceFieldFont named, a distance
+  //   field (boot/font_sdf.glsl).
+  constexpr uint64_t kSpriteTexturedColored = 0x9567C79307ACC6F5ull;  // k82001070_ps_3_0
+  constexpr uint64_t kSpriteTextured = 0x800BAA981E59B832ull;         // k820012E8_ps_3_0
+  // The font's four shaders, one per channel of its sheet.
+  constexpr uint64_t kFontChannels[4] = {0x958E44CCD28B2BE7ull, 0xCA0FB1474BA9BB09ull,
+                                         0x95CDB2FE143FD9E7ull, 0xE2CEF62EAE21A6ABull};
+  uint32_t sprite_mode = 0;
+  if (pixel && s.menu_texture_filtering &&
+      (pixel->port_hash == kSpriteTexturedColored || pixel->port_hash == kSpriteTextured)) {
+    sprite_mode = 1;
+  } else if (pixel && !pixel->textures.empty() &&
+             std::find(std::begin(kFontChannels), std::end(kFontChannels), pixel->port_hash) !=
+                 std::end(kFontChannels)) {
+    const uint64_t font = g_distance_field_font.load(std::memory_order_acquire);
+    const uint32_t word = regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 +
+                                      6 * pixel->textures[0].fetch_constant + 1];
+    if ((font >> 32) != 0 && GpuPhysicalAddress(word & 0xFFFFF000u) == uint32_t(font >> 32)) {
+      sprite_mode = 2 | uint32_t(font & 0xFFFFFF) << 8;
+    }
+  }
+  if (sprite_mode != 0) {
+    std::memcpy(&system.point_vertex_diameter_min, &sprite_mode, sizeof(uint32_t));
+  }
 
   // Constants into this frame's ring: system, vertex float, pixel float,
   // bool/loop, fetch. A block the same as the last one written points at it.
@@ -6985,7 +6934,7 @@ VkPipeline Passes::State::GetIdPipeline(const IdDraw& draw) {
   raster.cullMode = key.cull_mode;
   raster.frontFace = key.front_clockwise ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE;
   raster.depthBiasEnable = VK_TRUE;
-  raster.lineWidth = 1.0f;
+  raster.lineWidth = g_line_width;
   VkPipelineMultisampleStateCreateInfo multisample{
       VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
   multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
@@ -7268,12 +7217,8 @@ void Passes::State::Resolve(VkCommandBuffer commands, uint8_t* base, uint32_t de
     // bloom, the motion blur and the combine all read the anti-aliased
     // scene.
     ++main_view_resolves;
-    const GBuffer& race = gbuffers[kRaceView];
-    if ((race.enabled || xegtaos[kRaceView].enabled) && main_view_resolves == race.at) {
-      BuildGBuffer(commands, base, device, kRaceView);
-      if (xegtaos[kRaceView].enabled) {
-        XeGTAOAtResolve(commands, base, device, *source, kRaceView);
-      }
+    if (xegtaos[kRaceView].enabled && main_view_resolves == kXeGtaoRaceResolve) {
+      XeGTAOAtResolve(commands, base, device, *source, kRaceView);
     }
     if (main_view_resolves == cmaa2_at) {
       // Its drawn part; HDR stored at 8x (the resolves' exponent bias -3).
@@ -7549,6 +7494,16 @@ void Passes::set_skip_motion_blur(bool skip) {
   state_->skip_motion_blur = skip;
 }
 
+void Passes::set_menu_texture_filtering(bool enabled) {
+  state_->menu_texture_filtering = enabled;
+}
+
+void Renderer_SetDistanceFieldFont(uint32_t base_address, float spread) {
+  const uint64_t address = base_address ? GpuPhysicalAddress(base_address & 0xFFFFF000u) : 0;
+  const uint64_t fixed = uint64_t(std::clamp(spread, 0.0f, 1000.0f) * 256.0f) & 0xFFFFFF;
+  g_distance_field_font.store(address << 32 | fixed, std::memory_order_release);
+}
+
 void Passes::set_frame_blend(float strength, float inner, float outer, float shutter) {
   State::FrameBlend& b = state_->frame_blend;
   b.strength = std::clamp(strength, 0.0f, 1.0f);
@@ -7564,18 +7519,6 @@ void Passes::set_anti_aliasing(bool cmaa2, bool fxaa, uint32_t at, bool debug,
   state_->cmaa2 = cmaa2;
   state_->fxaa = fxaa;
   state_->cmaa2_at = at;
-}
-
-void Passes::set_gbuffer(bool enabled, uint32_t at, int32_t debug, float depth_range,
-                         float velocity_scale) {
-  for (State::GBuffer& g : state_->gbuffers) {
-    g.enabled = enabled;
-    g.at = std::max(at, 1u);
-    // Also drawn when the G-buffer is built only for --xegtao.
-    g.debug = std::clamp(debug, 0, 4);
-    g.depth_range = depth_range > 0 ? depth_range : 500.0f;
-    g.velocity_scale = velocity_scale;
-  }
 }
 
 void Passes::set_xegtao(bool enabled, int32_t quality, int32_t denoise, float radius,
@@ -8090,9 +8033,7 @@ VkExtent2D Passes::EndFrame(VkCommandBuffer commands, int32_t show_resolve, bool
     VkExtent2D front_extent = s.Scaled(s.front_extent);
     extent = {std::min({front_extent.width, front->extent.width, s.shown_extent.width}),
               std::min({front_extent.height, front->extent.height, s.shown_extent.height})};
-    // --gbuffer_debug and --xegtao_debug: their views drawn over the frame
-    // first.
-    s.DrawGBufferDebug(commands, *front, extent);
+    // --xegtao_debug: its view drawn over the frame first.
     s.DrawXeGTAODebug(commands, *front, extent);
     Transition(commands, front->image.image, front->aspects(), front->layout,
                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);

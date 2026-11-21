@@ -5,12 +5,12 @@
 
 #include "game/scene.h"
 
-#include <rex/cvar.h>
+#include "base/settings.h"
 
-REXCVAR_DEFINE_BOOL(native_scene, true, "SBX",
-                    "Our own C++ for the scene's constructors and destructors (its set-up, "
-                    "assets, the car scene) instead of the recompiled functions; the scene's "
-                    "updates and teardown stay recompiled");
+SBX_SETTING_BOOL(native_scene, true, "Overrides", "Scene",
+                 "Our own C++ for the scene's constructors and destructors (its set-up, "
+                 "assets, the car scene) instead of the recompiled functions; the scene's "
+                 "updates and teardown stay recompiled");
 
 namespace {
 
@@ -30,7 +30,7 @@ using guest::Guest;
 using guest::u16_be;
 using guest::u32_be;
 
-bool On() { return REXCVAR_GET(native_scene); }
+bool On() { return SBX_GET(native_scene); }
 
 constexpr uint32_t kMemRelease = 0x8000;
 

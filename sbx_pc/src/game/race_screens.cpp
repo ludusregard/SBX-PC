@@ -6,12 +6,12 @@
 
 #include "game/race_screens.h"
 
-#include <rex/cvar.h>
+#include "base/settings.h"
 
-REXCVAR_DEFINE_BOOL(native_race_screens, true, "SBX",
-                    "Our own C++ for the race screens' small parts (page steps, menu lists, "
-                    "the menus' and dialog's answers, the results' creates) instead of the "
-                    "recompiled functions; the screens' ticks and draws stay recompiled");
+SBX_SETTING_BOOL(native_race_screens, true, "Overrides", "Race",
+                 "Our own C++ for the race screens' small parts (page steps, menu lists, "
+                 "the menus' and dialog's answers, the results' creates) instead of the "
+                 "recompiled functions; the screens' ticks and draws stay recompiled");
 
 namespace {
 
@@ -25,7 +25,7 @@ using guest::At;
 using guest::Guest;
 using guest::u32_be;
 
-bool On() { return REXCVAR_GET(native_race_screens); }
+bool On() { return SBX_GET(native_race_screens); }
 
 // The race screens' globals (writable): [each] the object.
 constexpr uint32_t kPauseMenu = 0x826C7F7C;

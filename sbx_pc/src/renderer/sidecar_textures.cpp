@@ -3,9 +3,9 @@
 
 #include "renderer/sidecar_textures.h"
 
-#include "base/flags.h"
 #include "base/hash.h"
 #include "base/log.h"
+#include "base/settings.h"
 #include "renderer/state.h"
 
 #include <rex/graphics/xenos.h>
@@ -24,9 +24,9 @@
 #include <utility>
 #include <vector>
 
-ITC_FLAG_BOOL(sidecar_textures, true, "SBX",
-              "Draw the full-size textures in a pack's .sbpr sidecar (PATCH_DATA, the "
-              "language folders) in the place of their stand-ins; off draws the stand-ins");
+SBX_SETTING_BOOL(sidecar_textures, true, "Hooks", "Other",
+                 "Draw the full-size textures in a pack's .sbpr sidecar (PATCH_DATA, the "
+                 "language folders) in the place of their stand-ins; off draws the stand-ins");
 
 namespace renderer::sidecar {
 
@@ -172,7 +172,7 @@ void LayOutLevels(Image& image) {
 }  // namespace
 
 bool Enabled() {
-  bool enabled = ITC_FLAG(sidecar_textures);
+  bool enabled = SBX_GET(sidecar_textures);
   if (g_last_enabled.exchange(enabled, std::memory_order_relaxed) != enabled) {
     g_generation.fetch_add(1, std::memory_order_relaxed);
   }

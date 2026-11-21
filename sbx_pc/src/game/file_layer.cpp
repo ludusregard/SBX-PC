@@ -1,23 +1,24 @@
 // The file layer's objects as our own C++ (--native_file_layer, on by
-// default): the file classes' constructors and destructors (GameFile over
-// AsyncFile over File) and the path objects (Path, the game's GamePath),
-// which the game builds its file names in. The objects live on the
-// recompiled callers' stacks.
+// default): the file classes' constructors and destructors, deleting
+// destructors included (GameFile over AsyncFile over File), GameFile's opens
+// by name and the path objects (Path, the game's GamePath), which the game
+// builds its file names in. The objects live on the recompiled callers'
+// stacks.
 //
-// The file opens, reads and the archive stay recompiled (and the patch
-// loader's and --log_file_opens' hooks on them still apply).
+// The file opens and reads themselves and the archive stay recompiled (and
+// the patch loader's and --log_file_opens' hooks on them still apply).
 
+#include "base/settings.h"
 #include "game/std_types.h"
 #include "hooks/guest_call.h"
 
-#include <rex/cvar.h>
-
 #include <cstring>
 
-REXCVAR_DEFINE_BOOL(native_file_layer, true, "SBX",
-                    "Our own C++ for the file layer's objects (the file classes' constructors "
-                    "and destructors, Path::Build, GamePath::SetGame) instead of the recompiled "
-                    "functions; opening and reading files stays recompiled");
+SBX_SETTING_BOOL(native_file_layer, true, "Overrides", "Data and Saves",
+                 "Our own C++ for the file layer's objects (the file classes' constructors "
+                 "and destructors, GameFile's opens by name, Path::Build, GamePath's sets) "
+                 "instead of the recompiled functions; opening and reading files stays "
+                 "recompiled");
 
 namespace {
 
@@ -53,11 +54,21 @@ struct File {
   void Destroy() { vtable = kStreamVtable; }
 };
 
+GUEST_SIZE(File, 16);
+GUEST_OFFSET(File, handle, 4);
+
 // Path, and GamePath over it: a file name built in place.
 struct Path {
   u32_be vtable;
   char text[540];
+
+  void Construct() {
+    text[0] = 0;
+    vtable = kPathVtable;
+  }
 };
+GUEST_SIZE(Path, 544);
+GUEST_OFFSET(Path, text, 4);
 
 enum PathKind : uint32_t {
   kPathPlain = 0,
@@ -89,11 +100,58 @@ char* BuildPath(Guest& g, Path* path, uint32_t kind, const char* name) {
   return path->text;
 }
 
+// The frame the opens by name and GamePath's sets build their Path in, as
+// the originals have it.
+constexpr uint32_t kOpenByNameFrame = 640;
+constexpr uint32_t kSetPathFrame = 624;
+struct PathFrame {
+  uint8_t linkage[80];
+  Path path;
+};
+GUEST_OFFSET(PathFrame, path, 80);
+
+// GameFile's opens by name: the name made a plain path in a Path of the
+// original's frame, then the file's own open (`open`, with `mode` passed on)
+// on its text. True when it opened.
+bool OpenByName(Guest& g, File* file, const char* name, uint32_t mode, Guest::Function* open) {
+  guest::StackFrame frame(g.ctx, kOpenByNameFrame);
+  Path* path = &At<PathFrame>(frame.Local(0))->path;
+  path->Construct();
+  const char* text = BuildPath(g, path, kPathPlain, name);
+  const bool opened = uint8_t(g.Call(open, file, text, mode)) != 0;
+  path->vtable = kPathVtable;  // ~Path
+  return opened;
+}
+
+// GamePath's sets: the name built by `kind` in a Path of the original's
+// frame and its text copied over the game path's. Returns the game path's
+// text.
+char* SetGamePath(Guest& g, Path* game_path, uint32_t kind, const char* name,
+                  uint32_t return_address) {
+  guest_call::InFrame(g.ctx, g.base, kSetPathFrame, return_address, [&](uint32_t frame) {
+    Path* built = &At<PathFrame>(frame)->path;
+    built->Construct();
+    if (const char* text = BuildPath(g, built, kind, name)) {
+      std::strcpy(game_path->text, text);
+    }
+    built->vtable = kPathVtable;  // ~Path
+  });
+  return game_path->text;
+}
+
+// What the deleting destructors do after the destructor: the object freed
+// (operator delete) when bit 0 of the flags is set.
+void DeleteIfAsked(Guest& g, void* object, uint32_t flags) {
+  if ((flags & 1) != 0) {
+    g.Call(sub_8258C868, object);  // operator delete
+  }
+}
+
 }  // namespace
 
 #define SBX_FILE_LAYER_FALLBACK(name)     \
   REX_FUNC_PROLOGUE();                    \
-  if (!REXCVAR_GET(native_file_layer)) {  \
+  if (!SBX_GET(native_file_layer)) {  \
     __imp__##name(ctx, base);             \
     return;                               \
   }                                       \
@@ -133,9 +191,7 @@ extern "C" REX_FUNC(sub_820A69F8) {  // GameFile::~GameFile
 
 extern "C" REX_FUNC(sub_825791D8) {  // Path::Path
   SBX_FILE_LAYER_FALLBACK(sub_825791D8)
-  Path* path = At<Path>(ctx.r3.u32);
-  path->text[0] = 0;
-  path->vtable = kPathVtable;
+  At<Path>(ctx.r3.u32)->Construct();
 }
 
 extern "C" REX_FUNC(sub_825791F8) {  // Path::~Path
@@ -160,16 +216,77 @@ extern "C" REX_FUNC(sub_82579250) {
 // text set to the plain path of the name. Returns the text.
 extern "C" REX_FUNC(sub_820A6BA8) {
   SBX_FILE_LAYER_FALLBACK(sub_820A6BA8)
-  Path* game_path = At<Path>(ctx.r3.u32);
-  const char* name = At<char>(ctx.r4.u32);
-  // The original builds a Path on its stack and copies its text over.
-  guest_call::InFrame(ctx, base, 624, 0x820A6BDC, [&](uint32_t frame) {
-    Path* built = At<Path>(frame + 80);
-    built->text[0] = 0;
-    built->vtable = kPathVtable;
-    if (const char* text = BuildPath(g, built, kPathPlain, name)) {
-      std::strcpy(game_path->text, text);
-    }
-  });
-  ctx.r3.u64 = guest::AddressOf(game_path->text);
+  ctx.r3.u64 = guest::AddressOf(
+      SetGamePath(g, At<Path>(ctx.r3.u32), kPathPlain, At<char>(ctx.r4.u32), 0x820A6BDC));
+}
+
+// GamePath::Set: as SetGame with the second plain kind.
+extern "C" REX_FUNC(sub_820A6C20) {
+  SBX_FILE_LAYER_FALLBACK(sub_820A6C20)
+  ctx.r3.u64 = guest::AddressOf(
+      SetGamePath(g, At<Path>(ctx.r3.u32), kPathPlain2, At<char>(ctx.r4.u32), 0x820A6C54));
+}
+
+// GameFile::OpenWrite and OpenAsync by name: r3 = the file, r4 = the name,
+// r5 passed on to File::OpenWrite (sub_82572140) or AsyncFile::Open
+// (sub_825790C0). Return 1 when the file opened, else 0.
+extern "C" REX_FUNC(sub_820A6A08) {
+  SBX_FILE_LAYER_FALLBACK(sub_820A6A08)
+  ctx.r3.u64 = OpenByName(g, At<File>(ctx.r3.u32), At<char>(ctx.r4.u32), ctx.r5.u32, sub_82572140);
+}
+
+extern "C" REX_FUNC(sub_820A6AD8) {
+  SBX_FILE_LAYER_FALLBACK(sub_820A6AD8)
+  ctx.r3.u64 = OpenByName(g, At<File>(ctx.r3.u32), At<char>(ctx.r4.u32), ctx.r5.u32, sub_825790C0);
+}
+
+// The deleting destructors (each class's vtable slot 0): r3 = the object,
+// r4 = the flags. The destructor, then the object freed with bit 0. Return
+// the object.
+extern "C" REX_FUNC(sub_820A6B40) {  // GameFile
+  SBX_FILE_LAYER_FALLBACK(sub_820A6B40)
+  File* file = At<File>(ctx.r3.u32);
+  file->Destroy();
+  DeleteIfAsked(g, file, ctx.r4.u32);
+  ctx.r3.u64 = guest::AddressOf(file);
+}
+
+extern "C" REX_FUNC(sub_82579178) {  // AsyncFile
+  SBX_FILE_LAYER_FALLBACK(sub_82579178)
+  File* file = At<File>(ctx.r3.u32);
+  file->Destroy();
+  DeleteIfAsked(g, file, ctx.r4.u32);
+  ctx.r3.u64 = guest::AddressOf(file);
+}
+
+extern "C" REX_FUNC(sub_82579208) {  // Path
+  SBX_FILE_LAYER_FALLBACK(sub_82579208)
+  Path* path = At<Path>(ctx.r3.u32);
+  path->vtable = kPathVtable;
+  DeleteIfAsked(g, path, ctx.r4.u32);
+  ctx.r3.u64 = guest::AddressOf(path);
+}
+
+extern "C" REX_FUNC(sub_820A6C98) {  // GamePath
+  SBX_FILE_LAYER_FALLBACK(sub_820A6C98)
+  Path* path = At<Path>(ctx.r3.u32);
+  path->vtable = kGamePathVtable;
+  DeleteIfAsked(g, path, ctx.r4.u32);
+  ctx.r3.u64 = guest::AddressOf(path);
+}
+
+// AsyncFile::Detach: r3 = the file. Returns its handle and forgets it
+// (without closing it).
+extern "C" REX_FUNC(sub_82579160) {
+  SBX_FILE_LAYER_FALLBACK(sub_82579160)
+  File* file = At<File>(ctx.r3.u32);
+  const int32_t handle = file->handle;
+  file->handle = -1;
+  ctx.r3.u64 = uint32_t(handle);
+}
+
+// Path::Text: r3 = the path. Returns its text.
+extern "C" REX_FUNC(sub_825791F0) {
+  SBX_FILE_LAYER_FALLBACK(sub_825791F0)
+  ctx.r3.u64 = guest::AddressOf(At<Path>(ctx.r3.u32)->text);
 }

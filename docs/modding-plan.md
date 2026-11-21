@@ -16,7 +16,9 @@ replaces existing archive ids with loose files. It doesn't need to know
 what the files mean, and it already works for anything from one file to
 the whole Restored patch. It uses the game's own loose-file support: the
 TOC entry is changed in memory after `Archive::Init`, and
-`Archive::FindLooseFile` returns the file's path.
+`Archive::FindLooseFile` returns the file's path. Files can sit in
+sub-folders, and a `TOC.xml` gives ids to files with other names
+(`docs/game_data.md`, "Patch data").
 
 **Addon loader** (`assets/ADDON_DATA/`): new content loaded beside the
 base game, like DLC. Two layers:

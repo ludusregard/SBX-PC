@@ -3,14 +3,13 @@
 // vehicle's getters and setters, the vector and record copies, and two
 // debug switches (game/physics.h).
 
+#include "base/settings.h"
 #include "game/physics.h"
 #include "game/vehicle.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_vehicle_accessors, true, "SBX",
-                    "Our own C++ for the vehicle accessors' set-ups, resets, small setters and getters "
-                    "instead of the recompiled functions");
+SBX_SETTING_BOOL(native_vehicle_accessors, true, "Overrides", "Cars",
+                 "Our own C++ for the vehicle accessors' set-ups, resets, small setters and getters "
+                 "instead of the recompiled functions");
 
 namespace {
 
@@ -60,7 +59,7 @@ struct List {
   u32_be count;
 };
 
-bool On() { return REXCVAR_GET(native_vehicle_accessors); }
+bool On() { return SBX_GET(native_vehicle_accessors); }
 
 }  // namespace
 

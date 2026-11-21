@@ -9,12 +9,12 @@
 
 #include "game/accessories.h"
 
-#include <rex/cvar.h>
+#include "base/settings.h"
 
-REXCVAR_DEFINE_BOOL(native_accessories, true, "SBX",
-                    "Our own C++ for the interior accessories' set and files (create, scale, "
-                    "acquire, release, the file's load and callback) instead of the recompiled "
-                    "functions; the archive and the accessories' models stay recompiled");
+SBX_SETTING_BOOL(native_accessories, true, "Overrides", "Cars",
+                 "Our own C++ for the interior accessories' set and files (create, scale, "
+                 "acquire, release, the file's load and callback) instead of the recompiled "
+                 "functions; the archive and the accessories' models stay recompiled");
 
 namespace {
 
@@ -29,7 +29,7 @@ using guest::Guest;
 using guest::ptr;
 using guest::u32_be;
 
-bool On() { return REXCVAR_GET(native_accessories); }
+bool On() { return SBX_GET(native_accessories); }
 
 constexpr uint32_t kSet = 0x826B51F0;  // [it] the set (writable)
 constexpr uint32_t kEmptyVtable = 0x82000A40;  // What a destroyed base is left with.

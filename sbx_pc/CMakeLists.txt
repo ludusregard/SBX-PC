@@ -137,11 +137,14 @@ set(SBX_SOURCES
     src/game/mode_tick.cpp
     src/game/model_animation.cpp
     src/game/models.cpp
+    src/game/options_load_save.cpp
+    src/hooks/parking_area_wheels.cpp
     src/hooks/patch_loader.cpp
     src/hooks/post_effects.cpp
     src/hooks/post_race.cpp
     src/hooks/sidecar.cpp
     src/game/post_effect_objects.cpp
+    src/game/race_camera.cpp
     src/game/race_event.cpp
     src/game/race_hud.cpp
     src/game/race_hud_object.cpp
@@ -178,7 +181,11 @@ set(SBX_SOURCES
     src/game/tuning_pages.cpp
     src/game/tuning_screen.cpp
     src/game/type67_modes.cpp
+    src/game/ucl.cpp
     src/game/ui_movies.cpp
+    src/game/ui_movie_draw.cpp
+    src/game/ui_movie_nodes.cpp
+    src/game/ui_movie_text.cpp
     src/hooks/unlock_cut_cars.cpp
     src/game/vehicle.cpp
     src/game/vehicle_accessors.cpp
@@ -186,6 +193,7 @@ set(SBX_SOURCES
     src/game/xact.cpp
     src/game/xaudio.cpp
     src/hooks/xma.cpp
+    src/subtick/camera_cuts.cpp
     src/subtick/car_transforms.cpp
     src/subtick/frame_pacer.cpp
     src/subtick/game_messages.cpp
@@ -198,6 +206,7 @@ set(SBX_SOURCES
 list(APPEND SBX_SOURCES
     src/base/log.cpp
     src/base/log_sdk.cpp
+    src/base/settings.cpp
     src/base/settings_file.cpp
     src/helpers/executable.cpp
     src/renderer/app_window.cpp
@@ -234,6 +243,14 @@ endif()
 
 # No GPU plugin: the native renderer replaces the SDK's Xenos plugin.
 rexglue_setup_target(sbx)
+
+# Our settings come off the command line before the SDK's parser sees it
+# (src/main.cpp): on Linux the C runtime calls our __wrap_main, which calls
+# the SDK's main with the rest. (Windows filters from a C runtime
+# initializer instead.)
+if(NOT WIN32)
+    target_link_options(sbx PRIVATE "LINKER:--wrap=main")
+endif()
 
 # On Linux sbx looks for librexruntime and libTracyClient next to itself
 # ($ORIGIN), but the SDK only copies them there on Windows and macOS.

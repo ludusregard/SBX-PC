@@ -10,14 +10,13 @@
 // and finish, the ranking and the machine's set-up stay recompiled.
 
 #include "game/race_states.h"
+#include "base/settings.h"
 #include "game/track_zones.h"
 
-#include <rex/cvar.h>
-
-REXCVAR_DEFINE_BOOL(native_race_states, true, "SBX",
-                    "Our own C++ for the race states' simple handlers, the progress' reset and "
-                    "the route helpers each racer's progress uses every tick, instead of the "
-                    "recompiled functions; the race's ticks stay recompiled");
+SBX_SETTING_BOOL(native_race_states, true, "Overrides", "Race",
+                 "Our own C++ for the race states' simple handlers, the progress' reset and "
+                 "the route helpers each racer's progress uses every tick, instead of the "
+                 "recompiled functions; the race's ticks stay recompiled");
 
 namespace {
 
@@ -32,7 +31,7 @@ using guest::At;
 using guest::Guest;
 using guest::u32_be;
 
-bool On() { return REXCVAR_GET(native_race_states); }
+bool On() { return SBX_GET(native_race_states); }
 
 // The fades' screens (read-only words at 0x82001BE4 and 0x82001BE8).
 constexpr uint32_t kFadeInScreen = 5;

@@ -8,12 +8,12 @@
 
 #include "game/vehicle.h"
 
-#include <rex/cvar.h>
+#include "base/settings.h"
 
-REXCVAR_DEFINE_BOOL(native_vehicle, true, "SBX",
-                    "Our own C++ for the vehicles (construction, refresh, removal, the route "
-                    "positions each tick) instead of the recompiled functions; the route "
-                    "positions' update and the vehicle's set-up stay recompiled");
+SBX_SETTING_BOOL(native_vehicle, true, "Overrides", "Cars",
+                 "Our own C++ for the vehicles (construction, refresh, removal, the route "
+                 "positions each tick) instead of the recompiled functions; the route "
+                 "positions' update and the vehicle's set-up stay recompiled");
 
 
 namespace {
@@ -25,7 +25,7 @@ using game::Vehicles;
 using guest::At;
 using guest::Guest;
 
-bool On() { return REXCVAR_GET(native_vehicle); }
+bool On() { return SBX_GET(native_vehicle); }
 
 // Recompiled functions this file calls.
 void ConstructDynamics(Guest& g, game::VehicleDynamics* d) { g.Call(sub_820B4160, d); }
